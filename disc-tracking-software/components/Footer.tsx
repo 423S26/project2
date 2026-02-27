@@ -7,7 +7,7 @@ export default function Footer() {
         <div className="col-span-1 md:col-span-1">
           <Link href="/" className="inline-block flex-none mb-6">
             <img
-              src="/flight IQ logo.svg"
+              src="/flight-iq-logo.svg"
               alt="Flight IQ logo"
               className="h-12 md:h-10 w-auto transition-transform hover:scale-105 py-0.5"
             />
@@ -44,7 +44,7 @@ export default function Footer() {
       </div>
       
       <div className="border-t border-white/10 pt-8 text-center text-sm text-white/40">
-        © <span suppressHydrationWarning>{new Date().getFullYear()}</span> DiscTracker. All rights reserved.
+        © <span suppressHydrationWarning>{new Date().getFullYear()}</span> Flight IQ. All rights reserved.
       </div>
     </footer>
   )
