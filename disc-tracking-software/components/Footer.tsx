@@ -30,7 +30,7 @@ export default function Footer() {
           <h4 className="font-semibold text-white mb-4">Company</h4>
           <ul className="space-y-2 text-sm text-white/60">
             <li><Link href="/about" className="hover:text-[#54c4c3]">About Us</Link></li>
-            <li><Link href="https://github.com/423S26/project2" className="hover:text-[#54c4c3]">User Documentation</Link></li>
+            <li><Link href="/documentation" className="hover:text-[#54c4c3]">User Documentation</Link></li>
           </ul>
         </div>
 
