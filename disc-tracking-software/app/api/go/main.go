@@ -1,16 +1,16 @@
-
 package main
 
 import (
-	"fmt"
+	"database/sql" //placeholder before hooking up to actual database, but calls will be very similar in their place here
+	"encoding/json"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"time"
+
 	"github.com/gin-gonic/gin"
 	"google.golang.org/protobuf/proto"
-	"math"
-	"database/sql" //placeholder before hooking up to actual database, but calls will be very similar in their place here
 
 	"project2/disc-tracking-software/pb"
 )
@@ -64,23 +64,41 @@ func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 		if currentRPM < 100 && math.Abs(float64(ping.AccelZ)-1.0) < 0.2 {
 			session.EndPos = *ping
 			session.IsActive = false
-			
+
 			// Finalize Throw Data
 			finalizeThrow(session)
 			broadcastStatus(hub, ping.DeviceId, "LANDED")
-			
+
 			// Clean up session
 			delete(activeSessions, ping.DeviceId)
+
+			// to avoid a fake throw by someone accidentally tripping sensor
+			duration := session.EndPos.Timestamp - session.StartPos.Timestamp
+			if float64(duration)/1000.0 < 1.5 {
+				// Discard data - it wasn't a real throw
+				return
+			}
 		}
 	}
+}
 
-	//to avoid a fake throw by someone accidentally tripping sensor
-	duration := session.EndTime.Sub(session.StartTime)
+// finalizeThrow handles any final processing or storage of a completed throw session.
 
-	if duration.Seconds() < 1.5 {
-    		// Discard data - it wasn't a real throw
-    		return
+func finalizeThrow(session *ThrowSession) {
+	// Placeholder: Implement logic to persist throw data or trigger analytics.
+	// For now, just log the throw session.
+	log.Printf("Finalized throw: start=%v end=%v maxRPM=%.2f", session.StartPos, session.EndPos, session.MaxRPM)
+}
+
+// broadcastStatus sends a status update to all connected clients via the hub.
+
+func broadcastStatus(hub *Hub, deviceId string, status string) {
+	update := map[string]interface{}{
+		"device_id": deviceId,
+		"status":    status,
 	}
+	payload, _ := json.Marshal(update)
+	hub.broadcast <- payload
 }
 
 
@@ -132,6 +150,22 @@ func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
 	return dist / timeDelta // Result in meters per second
 }
 
+// Haversine calculates the great-circle distance between two points on the Earth.
+func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371000 // Earth radius in meters
+	lat1Rad := lat1 * math.Pi / 180
+	lat2Rad := lat2 * math.Pi / 180
+	deltaLat := (lat2 - lat1) * math.Pi / 180
+	deltaLon := (lon2 - lon1) * math.Pi / 180
+
+	a := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) +
+		math.Cos(lat1Rad)*math.Cos(lat2Rad)*
+			math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+
+	return R * c
+}
+
 // This takes raw G-force data and the sensor's offset from center
 
 func CalculateRPM(accelX, accelY float64, radiusMeters float64) float64 {
@@ -165,7 +199,7 @@ func main() {
 
 	r := gin.Default()
 
-	r.GET("/ws", func(c.*gin.Context) {
+	r.GET("/ws", func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			log.Println(err)
@@ -176,7 +210,6 @@ func main() {
 
 	go db_worker() //set backgorund go routine
 
-	r:= gin.Default()
 	r.POST("/api/v1/sync", func(c *gin.Context) {
 		body, err := io.ReadAll(c.Request.Body)
 		
@@ -204,6 +237,10 @@ func main() {
 
 	log.Println("Server running on :8080")
 	r.Run(":8080")
+}
+
+func db_worker() {
+	panic("unimplemented")
 }
 
 // CONSTANT: The distance from the center of the disc to IMU chip.
