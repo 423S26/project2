@@ -117,7 +117,6 @@ func ValidatePing(p *pb.Ping) bool {
 	return true
 }
 
-// ProcessSpatialData handles the "Heavy Lifting"
 func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) (float64, bool) {
 
 	// Using PostGIS for the surface distance and manual math for the Z-axis
@@ -274,7 +273,6 @@ func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 
 		if err == nil {
 			// 4. Broadcast the calculated data to Next.js via WebSocket
-			// We create a combined object so the frontend gets the RPM instantly
 			update := map[string]interface{}{
 				"device_id": ping.DeviceId,
 				"lat":       ping.Lat,
