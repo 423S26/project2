@@ -8,7 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"github.com"/gorilla/websocket"
+	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader {
