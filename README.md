@@ -106,9 +106,9 @@ Sprint Backlogs: https://docs.google.com/document/d/16ZOI3ZHT498dK0WAmcIgPP1SnBp
 __________________________________________________
 
 * Frontend | Next.js, TailwindCSS
-* Backend & DB | Go, PostgreSQL with Drizzle ORM, NeonDB, C
+* Backend & DB | Go, PostgreSQL with Drizzle ORM, NeonDB
 * Auth/Proxy | NextAuth.js
-* Hardware | Antenna integrated GPS module SKM52, XIAO RP2040, Disc Golf Driver
+* Hardware | Flashed in C with GO server connection, Antenna integrated GPS module SKM52, XIAO RP2040, Disc Golf Driver
 
 
 ## Getting Started
