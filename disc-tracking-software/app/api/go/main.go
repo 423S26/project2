@@ -107,8 +107,10 @@ func broadcastStatus(hub *Hub, deviceId string, status string) {
 
 // ValidatePing checks if the GPS data is high-quality enough to record
 func ValidatePing(p *pb.Ping) bool {
+
 	// HDOP < 2.0 is excellent, > 5.0 is junk. 
 	// We ignore anything above 4.0 to prevent "jitter"
+
 	if p.Hdop > 4.0 || p.Sats < 5 {
 		return false
 	}
@@ -117,8 +119,8 @@ func ValidatePing(p *pb.Ping) bool {
 
 // ProcessSpatialData handles the "Heavy Lifting"
 func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) (float64, bool) {
-	// 1. Calculate 3D Distance (Accounting for elevation)
-	// We use PostGIS for the surface distance and manual math for the Z-axis
+
+	// Using PostGIS for the surface distance and manual math for the Z-axis
 	var surfaceDist float64
 	query := `SELECT ST_DistanceSphere(
 		ST_MakePoint($1, $2), 
@@ -126,11 +128,10 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 	)`
 	db.QueryRow(query, teeLon, teeLat, p.Lon, p.Lat).Scan(&surfaceDist)
 
-	// 2. 3D Pythagorean Adjustment
 	verticalDist := p.Alt - teeAlt
 	totalDist := math.Sqrt(math.Pow(surfaceDist, 2) + math.Pow(verticalDist, 2))
 
-	// 3. OB (Out of Bounds) Check via Geofencing
+	// OB (Out of Bounds) Check via Geofencing
 	var isOB bool
 	obQuery := `SELECT EXISTS (
 		SELECT 1 FROM course_obstacles 
