@@ -1,6 +1,5 @@
 
 package main
-package physics
 
 import (
 	"fmt"
