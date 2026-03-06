@@ -45,9 +45,10 @@ func (h *Hub) Run() {
 			h.mu.Lock()
 			h.clients[client] = true
 			h.mu.Unlock()
-		case client := <- h.broadcast:
+		case _ = <- h.broadcast:
 			h.mu.Lock()
 			for client := range h.clients {
+				message := 0
 				err := client.WriteMessage(websocket.TextMessage, message)
 				if err != nil {
 					log.Printf("error :( | %v", err)
