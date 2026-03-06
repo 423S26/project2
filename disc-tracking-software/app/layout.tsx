@@ -1,19 +1,15 @@
+// app/layout.tsx
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";  // ← Change here
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "sonner";
+import { SettingsProvider } from "@/contexts/SettingsContext";
 
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",      // We'll use this CSS variable
-  display: "swap",               // Good FOUT/FOIT handling
-  // Optional: If you want specific weights only (Inter is variable by default)
-  // weight: ["300", "400", "500", "600", "700"],
-});
+const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "DiscTracker – Your Disc Golf Companion",
-  description: "Track your discs, log throws, analyze flight stats, and manage your bag.",
+  title: "Disc Tracking Software",
+  description: "Track your disc golf throws and improve your game",
 };
 
 export default function RootLayout({
@@ -22,10 +18,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} font-sans`} suppressHydrationWarning>
-      <body className="antialiased">
-        {children}
-        <Toaster richColors position="top-center" />
+    <html lang="en" suppressHydrationWarning>
+      <body className={inter.className}>
+        <SettingsProvider>  {/* ← wrap entire app */}
+          {children}
+          <Toaster richColors position="top-center" />
+        </SettingsProvider>
       </body>
     </html>
   );

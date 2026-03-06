@@ -2,9 +2,9 @@
 __________________________________________________
 PROJECT OVERVIEW: 
 
-The purpose of this project is to deliver an improved, all-encompassing disc golf tracker to help users find their frisbees quicker and view their performance. To start the software, simply go to the website, create an account, and you will be redirected to the web application. From there connect your tracked disc to your account on the web app and start playing!
+The purpose of this project is to deliver an improved, all-encompassing disc golf tracker to help users find their frisbees more quickly and view their performance. To start the software, go to the website, create an account, and you will be redirected to the web application. From there, connect your tracked disc to your account on the web app and start playing!
 
-This software includes: Add or remove tracked discs, view flight stats, record throws for better insights, and use tracking functionality to find discs quicker. 
+This software includes: Add or remove tracked discs, view flight stats, record throws for better insights, and use tracking functionality to find discs more quickly. 
 
 WANT TO REPORT A BUG OR SUGGEST A FEATURE?
 Contact Us: moshernat@hotmail.com, wearewebtastic@gmail.com
@@ -13,18 +13,69 @@ Contact Us: moshernat@hotmail.com, wearewebtastic@gmail.com
 USER DOCS: 
 * Interface incorporates WCAG AA styling to comply with ADA standards for web development.
 * The color palette and typeface choice are an improvement from the original prototype. Improving readability by using a San Serif typeface (Inter) via Google Fonts for free-use purposes.
-* Colors will not cause conflict with readability. This is verified by WEBAIM.org https://webaim.org/resources/contrastchecker/.
+* Colors will not cause conflict with readability. WEBAIM.org https://webaim.org/resources/contrastchecker/ verifies this.
 
 ACCESSING/USING THE APP:
-* Go to the website: https://disc-tracking-software.vercel.app/
-* Either "Sign-in" or "Create an account" by following the navigation at the top of the webpage.
-* Once logged in, you can add the tracked disc under the disc actions drop-down. Once you add your disc credentials, you can sync the tracker and start playing.
-* Once a disc is synced, you have multiple options for what to do with it within the dropdown options; You can delete the disc if needed, change it out for an alternative tracked disc on their profile, and sync if desired.
-* Now that you've synced and decided what disc to play, you can preview the live GPS distance tracker to help you find the disc once thrown!
-* Another fun feature is the ability to receive data based on your throws, either using the tracker's accelerometer built into the device or by recording the flight time manually if preferred. This provides a detailed flight chart so you can view the data and understand how your throws are traveling.
-* This is useful for many reasons because you can determine what discs are best for the situation, for example, throwing far shots, or a hard right hook. Making judgment calls for the correct disc to throw in a competitive game can be hard. By experimenting with the tool, you will have all the data you need to make those crucial game-breaking throws.
-* Data collection: Once you make a throw, you can decide whether or not to add it to your throw statistics. Everyone makes mistakes in Disc golf, if a player tees off, nailing a tree in the first 5-10 feet, odds are they don't want that to impact their flight statistics. Once a throw is made, or the  manual timer is done being used for the throw, the player previews their throw information, flight chart, velocity, distance, etc. They are then prompted as to whether or not they want to add the throw to their statistical records by clicking the "Add Throw to Records" button or resetting by either throwing again or resetting the manual timer.
-* Your throw data will be added to the "User Throw Statistics" portion of the application, where you can view, analyse, and compare data so you can find the optimal disc to use for any situation on the course. 
+# How to Use Disc Tracking Software
+
+Follow these steps to get started tracking your disc golf throws.
+
+### 1. Visit the Website
+Go to:  
+🌐 **https://disc-tracking-software.vercel.app/**
+
+### 2. Sign In or Create an Account
+Use the navigation at the top of the page to either:
+
+- 🔑 **Sign in** with your existing account, or
+- 🆕 **Create a new account**
+
+### 3. Add & Manage Tracked Discs
+Once logged in:
+- Name and start a session
+- Open the **Disc Actions** dropdown
+- Add a new tracked disc by entering its name and connection number
+- After adding, you can:
+  - Sync the tracker
+  - Switch between discs in your bag
+  - Remove a disc if needed
+
+### 4. Sync & Throw
+With a disc selected and synced:
+
+- Use the **live GPS distance preview** to help locate your disc after a throw
+- Record throws using:
+  - Built-in **accelerometer** data (auto-detects flight), or
+  - **Manual stopwatch** mode (configurable in settings)
+
+### 5. View Throw Analysis
+After a throw, you’ll see:
+
+- 📊 A detailed **flight path chart** showing curvature, distance, and direction
+- Key metrics include but are not limited to:
+  - Flight time
+  - Distance
+  - Average velocity
+- Metrics can be changed to meters or feet, and can be chosen to be visible in the settings panel when desired
+
+This data helps you understand disc behavior — perfect for choosing the right disc for long shots, hard right hooks, or windy conditions.
+
+### 6. Save or Discard Throw Data
+Not every throw is perfect (trees happen!). After viewing results:
+
+- Click ** "Add Throw to Records"** to save the throw to your statistics, or
+- Reset the timer and try again if you don’t want to log it
+- Autosave is also available; users can delete their bad throws in the throw statistics page when desired
+
+### 7. View Your Throw Statistics
+Saved throws appear in the **User Throw Statistics** section, where you can:
+
+- 📈 Analyze patterns in sessions over time
+- 🔍 Compare different discs
+- 🎯 Identify which disc performs best in specific situations
+
+**Experiment freely** — the more data from sessions you collect, the better your on-course decisions will become.
+
 
 
 DEVELOPER DOCS: 

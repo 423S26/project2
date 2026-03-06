@@ -20,7 +20,7 @@ export default function About() {
             </p>
 
             <p>
-              Our software uses advanced tracking and analysis to give you clear insights into every throw — helping you understand your technique, identify patterns, and make smarter decisions on the course.
+              Our software uses advanced tracking and analysis to give you clear insights into every throw, helping you not only understand your technique but also identify patterns and make smarter decisions on the course.
             </p>
 
             <p>
@@ -32,16 +32,25 @@ export default function About() {
             </p>
           </div>
 
-          {/* Right column: Image */}
-          <div className="flex justify-center md:justify-end">
-            <div className="relative w-full max-w-md aspect-4/3 rounded-2xl overflow-hidden shadow-2xl border border-[#223066]/50">
-              {/* Replace this src with your actual image */}
+          {/* Right column: 2 Profile Images */}
+          <div className="flex flex-col sm:flex-row gap-8 justify-center items-center">
+            {/* Profile 1 */}
+            <a href="https://github.com/Jadontalis" className="w-48 h-48 relative rounded-full overflow-hidden border-0 border-[#54c4c3] shadow-lg shadow-[#54c4c3]/20 transition-transform duration-300 hover:scale-105 block">
               <img
-                src="/about-team-disc-golf.jpg" // ← update this path to your real image
-                alt="Team playing disc golf"
-                className="object-cover w-full h-full transition-transform hover:scale-105 duration-500"
+                src="/jaden-github.jpg"
+                alt="Profile 1"
+                className="w-full h-full object-cover"
               />
-            </div>
+            </a>
+
+            {/* Profile 2 */}
+            <a href="https://github.com/CutoverOsprey39" className="w-48 h-48 relative rounded-full overflow-hidden border-0 border-[#54c4c3] shadow-lg shadow-[#54c4c3]/20 transition-transform duration-300 hover:scale-105 block">
+              <img
+                src="/nathan-github.jpg"
+                alt="Profile 2"
+                className="w-full h-full object-cover"
+              />
+            </a>
           </div>
         </div>
       </div>
