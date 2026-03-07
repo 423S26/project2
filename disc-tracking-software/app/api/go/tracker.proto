@@ -1,7 +1,7 @@
-syntax  = "proto3"
+syntax  = "proto3";
 
 package tracker;
-option go_package = "./pb" //to tell compiler where to put GO instructions
+option go_package = "./pb"; //to tell compiler where to put GO instructions
 
 //object representing characteristics of what is captured in a single GPS ping from disc
 message Ping {
@@ -12,11 +12,12 @@ message Ping {
   float hdop = 5; //horizontal Dilution of Precision
   int32 sats = 6;  //satellite number
   float speed = 7; //velocity of GPS/GNSS in m/s
-  float64 accel_x = 8; //IMU | accelerometer in x
-  float64 accel_y = 9; //IMU | accelerometer in x
-  float64 accel_z = 10; //IMU | accelerometer in z, clean release here will show as a flat z-axis, Off Axis Torque (OAT) will show high frequency noise
-  int64 timestamp = 11; //epoch time
-  int32 battery = 12: //millivolts
+  double accel_x = 8; //IMU | accelerometer in x
+  double accel_y = 9; //IMU | accelerometer in x
+  double accel_z = 10; //IMU | accelerometer in z, clean release here will show as a flat z-axis, Off Axis Torque (OAT) will show high 
+  double frequency_noise = 11; //Delay to avoid fake throws/ acccidental registers
+  int64 timestamp = 12; //epoch time
+  int32 battery = 13; //millivolts
 }
 
 //burst binary transfer when phone is in range

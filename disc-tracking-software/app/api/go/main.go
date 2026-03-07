@@ -1,3 +1,7 @@
+//NOTE: UNIT TESTS ARE IN A SEPARATE FILE (main_test.go) TO AVOID IMPORT CYCLES WITH THE PROTOBUF STRUCTS
+//NOTE: ASSERTS WILL BE IMPLEMENTED INLINE
+//TODO: REMOVE JSON ENCODING/DECODING AND JUST USE PROTOBUF DATA ENCODING FOR WEBSOCKET COMMUNICATION TO FRONTEND
+
 package main
 
 import (
@@ -9,15 +13,15 @@ import (
 	"net/http"
 	"time"
 
+	"project2/disc-tracking-software/pb"
+
 	"github.com/gin-gonic/gin"
 	"google.golang.org/protobuf/proto"
-
-	"project2/disc-tracking-software/pb"
 )
 
 //------------------------------------------
 
-type DiscState int 
+type DiscState int
 
 const (
 	StateIdle DiscState = iota
@@ -27,10 +31,10 @@ const (
 
 type ThrowSession struct {
 	StartTime time.Time
-	StartPos pb.Ping
-	EndPos pb.Ping
-	MaxRPM float64
-	IsActive bool
+	StartPos  pb.Ping
+	EndPos    pb.Ping
+	MaxRPM    float64
+	IsActive  bool
 }
 
 var activeSessions = make(map[string]*ThrowSession)
@@ -38,7 +42,7 @@ var activeSessions = make(map[string]*ThrowSession)
 func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 	session, exists := activeSessions[ping.DeviceId]
 
-	// INIT DETECTION: Launch 
+	// INIT DETECTION: Launch
 	// Trigger: RPM jumps from 0 to > 400 AND G-Force > 5G
 
 	if !exists && currentRPM > 400 {
@@ -101,14 +105,11 @@ func broadcastStatus(hub *Hub, deviceId string, status string) {
 	hub.broadcast <- payload
 }
 
-
 //------------------------------------------
-
 
 // ValidatePing checks if the GPS data is high-quality enough to record
 func ValidatePing(p *pb.Ping) bool {
-
-	// HDOP < 2.0 is excellent, > 5.0 is junk. 
+	// HDOP < 2.0 is excellent, > 5.0 is junk.
 	// We ignore anything above 4.0 to prevent "jitter"
 
 	if p.Hdop > 4.0 || p.Sats < 5 {
@@ -125,9 +126,9 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		ST_MakePoint($1, $2), 
 		ST_MakePoint($3, $4)
 	)`
-	db.QueryRow(query, teeLon, teeLat, p.Lon, p.Lat).Scan(&surfaceDist)
+	db.QueryRow(query, teeLon, teeLat, p.Longitude, p.Latitude).Scan(&surfaceDist)
 
-	verticalDist := p.Alt - teeAlt
+	verticalDist := p.Altitude - teeAlt
 	totalDist := math.Sqrt(math.Pow(surfaceDist, 2) + math.Pow(verticalDist, 2))
 
 	// OB (Out of Bounds) Check via Geofencing
@@ -136,17 +137,17 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		SELECT 1 FROM course_obstacles 
 		WHERE ST_Intersects(boundary, ST_SetSRID(ST_MakePoint($1, $2), 4326))
 	)`
-	db.QueryRow(obQuery, p.Lon, p.Lat).Scan(&isOB)
+	db.QueryRow(obQuery, p.Longitude, p.Latitude).Scan(&isOB)
 
 	return totalDist, isOB
 }
 
 func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
-	timeDelta := float64(p2.Timestamp - p1.Timestamp) / 1000.0 // seconds
-	
+	timeDelta := float64(p2.Timestamp-p1.Timestamp) / 1000.0 // seconds
+
 	// Distance between two points
-	dist := Haversine(p1.Lat, p1.Lon, p2.Lat, p2.Lon) 
-	
+	dist := Haversine(p1.Latitude, p1.Longitude, p2.Latitude, p2.Longitude)
+
 	return dist / timeDelta // Result in meters per second
 }
 
@@ -172,21 +173,20 @@ func CalculateRPM(accelX, accelY float64, radiusMeters float64) float64 {
 
 	//calculate resultant acceleration (Centripetal Force) via Pythagorem theorem combining x and y axes
 	resultantG := math.Sqrt(math.Pow(accelX, 2) + math.Pow(accelY, 2))
-	
+
 	//convert Gs to m/s^2 (1G = 9.80665 m/s^2)
 	accelMS2 := resultantG * 9.80665
-	
+
 	//solve for Omega (Angular Velocity in rad/s)
 	//w = sqrt(a / r)
 	omega := math.Sqrt(accelMS2 / radiusMeters)
-	
+
 	//convert Radians per Second to Revolutions per Minute
 	//RPM = (w * 60) / (2 * Pi)
 	rpm := (omega * 60) / (2 * math.Pi)
-	
+
 	return rpm
 }
-
 
 //----------------------------------------------------------------------
 //buffered channels to handle binary package ingestion
@@ -212,7 +212,7 @@ func main() {
 
 	r.POST("/api/v1/sync", func(c *gin.Context) {
 		body, err := io.ReadAll(c.Request.Body)
-		
+
 		if err != nil { //read raw binary stream
 			c.AbortWithStatus(http.StatusBadRequest)
 			return
@@ -254,7 +254,7 @@ func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 		// Formula: w = sqrt(a/r) | RPM = (w * 60) / 2pi
 		resultantG := math.Sqrt(math.Pow(float64(ping.AccelX), 2) + math.Pow(float64(ping.AccelY), 2))
 		accelMS2 := resultantG * 9.80665
-		
+
 		var rpm float64 = 0
 		if resultantG > 0.1 { // Avoid division by zero/noise
 			omega := math.Sqrt(accelMS2 / SensorRadiusMeters)
@@ -268,15 +268,15 @@ func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 		_, err := db.Exec(`
 			INSERT INTO throws (device_id, location, hdop, rpm, wobble_g)
 			VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7)`,
-			ping.DeviceId, ping.Lon, ping.Lat, ping.Alt, ping.Hdop, rpm, wobble,
+			ping.DeviceId, ping.Longitude, ping.Latitude, ping.Altitude, ping.Hdop, rpm, wobble,
 		)
 
 		if err == nil {
 			// 4. Broadcast the calculated data to Next.js via WebSocket
 			update := map[string]interface{}{
 				"device_id": ping.DeviceId,
-				"lat":       ping.Lat,
-				"lon":       ping.Lon,
+				"lat":       ping.Latitude,
+				"lon":       ping.Longitude,
 				"rpm":       math.Round(rpm),
 				"wobble":    wobble,
 			}
