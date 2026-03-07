@@ -100,15 +100,15 @@ __________________________________________________
 
 UML: https://lucid.app/lucidchart/de78a944-3a2f-447c-8bc5-a37025b7ed87/edit?viewport_loc=-3217%2C-517%2C5539%2C1991%2C0_0&invitationId=inv_a76ce23f-0b78-49b6-ada1-e109331ec88d
 
-Sprint Backlogs: https://docs.google.com/document/d/16ZOI3ZHT498dK0WAmcIgPP1SnBpY4iGB3s9eKXZxDik/edit?usp=sharing
+Sprint/Portfolio Backlogs: https://docs.google.com/document/d/16ZOI3ZHT498dK0WAmcIgPP1SnBpY4iGB3s9eKXZxDik/edit?usp=sharing
 
 ## Tech Stack
 __________________________________________________
 
 * Frontend | Next.js, TailwindCSS
-* Backend & DB | Go, PostgreSQL with Drizzle ORM, NeonDB, C
+* Backend & DB | Go, PostgreSQL with Drizzle ORM, NeonDB
 * Auth/Proxy | NextAuth.js
-* Hardware | Antenna integrated GPS module SKM52, XIAO RP2040, Disc Golf Driver
+* Hardware | Flashed in C with GO server connection, Antenna integrated GPS module SKM52, XIAO RP2040, Disc Golf Driver
 
 
 ## Getting Started
