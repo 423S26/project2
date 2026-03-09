@@ -31,8 +31,8 @@ const (
 
 type ThrowSession struct {
 	StartTime time.Time
-	StartPos  pb.Ping
-	EndPos    pb.Ping
+	StartPos  *pb.Ping
+	EndPos    *pb.Ping
 	MaxRPM    float64
 	IsActive  bool
 }
@@ -48,7 +48,7 @@ func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 	if !exists && currentRPM > 400 {
 		activeSessions[ping.DeviceId] = &ThrowSession{
 			StartTime: time.Unix(ping.Timestamp/1000, 0),
-			StartPos:  *ping,
+			StartPos:  ping,
 			MaxRPM:    currentRPM,
 			IsActive:  true,
 		}
@@ -66,20 +66,17 @@ func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 		// Trigger: RPM drops significantly AND Z-axis stabilizes at ~1G
 
 		if currentRPM < 100 && math.Abs(float64(ping.AccelZ)-1.0) < 0.2 {
-			session.EndPos = *ping
+			session.EndPos = ping
 			session.IsActive = false
 
-			// Finalize Throw Data
 			finalizeThrow(session)
 			broadcastStatus(hub, ping.DeviceId, "LANDED")
 
-			// Clean up session
 			delete(activeSessions, ping.DeviceId)
 
-			// to avoid a fake throw by someone accidentally tripping sensor
 			duration := session.EndPos.Timestamp - session.StartPos.Timestamp
+
 			if float64(duration)/1000.0 < 1.5 {
-				// Discard data - it wasn't a real throw
 				return
 			}
 		}
@@ -90,7 +87,6 @@ func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 
 func finalizeThrow(session *ThrowSession) {
 	// Placeholder: Implement logic to persist throw data or trigger analytics.
-	// For now, just log the throw session.
 	log.Printf("Finalized throw: start=%v end=%v maxRPM=%.2f", session.StartPos, session.EndPos, session.MaxRPM)
 }
 
