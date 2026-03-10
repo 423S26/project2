@@ -47,7 +47,7 @@ func (h *Hub) Run() {
 		case message := <-h.broadcast:
 			h.mu.Lock()
 			for client := range h.clients {
-				err := client.WriteMessage(websocket.TextMessage, message)
+				err := client.WriteMessage(websocket.BinaryMessage, message)
 				if err != nil {
 					log.Printf("error :( | %v", err)
 					client.Close()
