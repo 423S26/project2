@@ -3,6 +3,12 @@
 
 import { useState, useEffect, useRef } from 'react';
 
+// ──────────────────────────────────────────────────────────────
+// Stopwatch – manual timing component with user-configurable delay
+// Currently uses browser setInterval – can be replaced with real hardware timing
+// Backend integration: minimal here (mostly UI), but can sync time data if needed
+// ──────────────────────────────────────────────────────────────
+
 type Props = {
   isRunning: boolean;
   elapsedTime: number;
@@ -20,17 +26,25 @@ export default function Stopwatch({
   onStop,
   onReset,
 }: Props) {
-  const [delaySeconds, setDelaySeconds] = useState<number>(0);
+  const [delaySeconds, setDelaySeconds] = useState<number>(0); // User-selected delay (0–10s)
   const [remainingDelay, setRemainingDelay] = useState<number | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
 
-  // Unified display time (negative during delay, positive during flight)
+  // Unified display time: negative during delay phase, positive during flight
   const [displayTime, setDisplayTime] = useState<number>(0);
 
-  // Track if the timer has ever been started (to hide Start after first use)
+  // Track if timer has been started at least once (to hide Start button after first use)
   const [hasBeenStarted, setHasBeenStarted] = useState(false);
 
+  // ──────────────────────────────────────────────────────────────
+  // Main timer loop – uses browser setInterval
+  // TODO (Backend/Hardware): Replace with real hardware timing if available
+  // Options:
+  //   1. Device sends precise flight start/stop timestamps → use those instead of Date.now()
+  //   2. Web Bluetooth / native bridge pushes timing events
+  //   3. Keep browser timing as fallback
+  // ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isRunning) return;
 
@@ -50,12 +64,14 @@ export default function Stopwatch({
       const elapsedMs = Date.now() - (startTimeRef.current || Date.now());
       const timeInSeconds = elapsedMs / 1000;
 
+      // Update display (negative during delay, positive during flight)
       setDisplayTime(timeInSeconds - delaySeconds);
 
+      // Only update real elapsed time after delay ends
       if (timeInSeconds >= delaySeconds) {
         setElapsedTime(timeInSeconds - delaySeconds);
       }
-    }, 100);
+    }, 100); // 100ms updates for smooth display
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -134,7 +150,6 @@ export default function Stopwatch({
             [&::-moz-range-thumb]:cursor-pointer
           "
         />
-        {/* Boundary labels: 0 and 10 */}
         <div className="flex justify-between text-xs text-white/60 mt-1 px-1">
           <span>0 s</span>
           <span>10 s</span>
@@ -143,7 +158,7 @@ export default function Stopwatch({
 
       {/* Controls */}
       <div className="flex justify-center gap-4">
-        {/* Show Start only if never started or after full reset */}
+        {/* Start button – only visible if never started or after full clear */}
         {!isRunning && !hasBeenStarted && (
           <button
             onClick={handleStart}
@@ -153,7 +168,7 @@ export default function Stopwatch({
           </button>
         )}
 
-        {/* Show Stop while running (delay or timer) */}
+        {/* Stop button – visible while running (delay or flight) */}
         {isRunning && (
           <button
             onClick={handleStop}
@@ -163,7 +178,7 @@ export default function Stopwatch({
           </button>
         )}
 
-        {/* Show Clear only after stop */}
+        {/* Clear button – only visible after stop (replaces old Reset) */}
         {hasBeenStarted && !isRunning && (
           <button
             onClick={handleClear}
@@ -173,6 +188,12 @@ export default function Stopwatch({
           </button>
         )}
       </div>
+
+      {/* TODO (Backend/Hardware): If integrating real hardware timing */}
+      {/* - Replace setInterval with device-triggered events */}
+      {/* - Example: device sends "throw started" → call onStart() */}
+      {/* - device sends "throw ended" → call onStop() */}
+      {/* - Sync elapsedTime from device timestamp if more accurate */}
     </div>
   );
 }

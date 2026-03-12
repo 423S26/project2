@@ -7,6 +7,9 @@ import { signOut } from 'next-auth/react';
 import Link from 'next/link';
 import { useSettings, MetricKey } from '@/contexts/SettingsContext';
 
+// IMPORTANT: This component manages the user settings panel.
+// Backend integration points are marked below.
+
 export default function DashboardHeader() {
   const { settings, updateSettings } = useSettings();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -15,6 +18,18 @@ export default function DashboardHeader() {
   const closeSettings = () => setIsSettingsOpen(false);
 
   const handleSave = () => {
+    // TODO (Backend): When user clicks "Save & Close", send updated settings to Go server
+    // Example payload:
+    // {
+    //   userId: currentUser.id,
+    //   distanceUnit: settings.distanceUnit,
+    //   throwMode: settings.throwMode,
+    //   autoSaveThrows: settings.autoSaveThrows,
+    //   selectedMetrics: settings.selectedMetrics
+    // }
+    // Use fetch('/api/settings', { method: 'PATCH', body: JSON.stringify(...) })
+    // Then update local state only after successful response
+
     closeSettings();
   };
 
@@ -23,6 +38,9 @@ export default function DashboardHeader() {
     const updated = current.includes(key)
       ? current.filter((m) => m !== key)
       : [...current, key];
+
+    // TODO (Backend): This is a live update. For real apps, you may want to debounce
+    // and batch updates instead of sending on every checkbox click?
     updateSettings({ selectedMetrics: updated });
   };
 
@@ -117,6 +135,7 @@ export default function DashboardHeader() {
                     <span className="text-white/90">Meters (m)</span>
                   </label>
                 </div>
+                {/* TODO (Backend): Save preference to user profile on change or on "Save & Close" */}
               </div>
 
               {/* Throw Mode */}
@@ -146,6 +165,7 @@ export default function DashboardHeader() {
                     <span className="text-white/90">Auto (Accelerometer)</span>
                   </label>
                 </div>
+                {/* TODO (Backend): Save preference to user profile */}
               </div>
 
               {/* Auto-Save */}
@@ -165,6 +185,7 @@ export default function DashboardHeader() {
                     </p>
                   </div>
                 </label>
+                {/* TODO (Backend): Save preference to user profile */}
               </div>
 
               {/* Throw Results Metrics */}
@@ -194,10 +215,11 @@ export default function DashboardHeader() {
                     </label>
                   ))}
                 </div>
+                {/* TODO (Backend): Save array of selected metrics to user profile */}
               </div>
 
-              {/* Save button – increased bottom margin */}
-              <div className="pt-8 pb-12"> {/* ← Added pb-12 for bottom spacing */}
+              {/* Save button */}
+              <div className="pt-8 pb-12">
                 <button
                   onClick={handleSave}
                   className="
@@ -212,6 +234,7 @@ export default function DashboardHeader() {
                 >
                   Save & Close
                 </button>
+                {/* TODO (Backend): This button should trigger a PATCH request to update user settings */}
               </div>
             </div>
           </div>

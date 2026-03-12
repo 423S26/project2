@@ -11,12 +11,24 @@ import RemoveConfirmPopup from './RemoveConfirmPopup';
 import AddDiscPopup from './AddDiscPopup';
 import { Disc } from './types';
 
+// ──────────────────────────────────────────────────────────────
+// DiscActionsDropdown – main container for disc selection, syncing, timing, and throw results
+// Backend integration checklist:
+//   - GET /api/discs → fetch real user discs (replace static currentDiscs)
+//   - POST /api/discs → add new disc (from AddDiscPopup)
+//   - DELETE /api/discs/:id → remove disc (from RemoveConfirmPopup)
+//   - POST /api/sync/:discId → get real distance (replace fake 285)
+//   - POST /api/throws → save throw data (auto or manual)
+// ──────────────────────────────────────────────────────────────
+
 type DiscActionsDropdownProps = {
+  // TODO (Backend): Replace static prop with real data from GET /api/discs
+  // Fetch on mount or after add/remove
   currentDiscs?: Disc[];
 };
 
 export default function DiscActionsDropdown({
-  currentDiscs = [],
+  currentDiscs = [], // ← TEMP: static fallback – replace with fetched data
 }: DiscActionsDropdownProps) {
   const { settings } = useSettings();
 
@@ -27,16 +39,17 @@ export default function DiscActionsDropdown({
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [showAddPopup, setShowAddPopup] = useState(false);
   const [trackingNumber, setTrackingNumber] = useState('');
-  const [discName, setDiscName] = useState(''); // for AddDiscPopup
+  const [discName, setDiscName] = useState('');
+  const [discType, setDiscType] = useState(''); // NEW for AddDiscPopup
   const [showDiscList, setShowDiscList] = useState(false);
 
-  // Timing state
+  // Timing state – shared between Stopwatch and Accelerometer
   const [isRunning, setIsRunning] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [showThrowResults, setShowThrowResults] = useState(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Flag to prevent duplicate auto-save on same throw
+  // Prevent duplicate auto-save on same throw
   const [justStopped, setJustStopped] = useState(false);
 
   const toggleDropdown = () => setIsOpen(!isOpen);
@@ -52,17 +65,36 @@ export default function DiscActionsDropdown({
     setSyncStatus('idle');
     setTrackerDistance(null);
     setShowDiscList(false);
+    // TODO (Backend): Optional: PATCH /api/user/active-disc { discId: disc.id }
+    // So active disc persists across sessions/devices
   };
 
   const handleSync = () => {
+    // TODO (Backend): Replace fake sync with real hardware connection
+    // 1. Use selectedDisc.connectionNumber to connect (Bluetooth, WebSocket, etc.)
+    // 2. Request current distance from device
+    // 3. Update trackerDistance with real value (in feet)
+    // 4. Set syncStatus based on result
+    // Example:
+    // fetch(`/api/sync/${selectedDisc?.id}`)
+    //   .then(res => res.json())
+    //   .then(data => {
+    //     setTrackerDistance(data.distance);
+    //     setSyncStatus('success');
+    //   })
+    //   .catch(() => setSyncStatus('error'));
     setSyncStatus('success');
-    setTrackerDistance(285);
+    setTrackerDistance(285); // ← TEMP fake value – replace with real
     closeDropdown();
   };
 
   const handleRemoveDisc = () => setShowRemoveConfirm(true);
 
   const confirmRemove = () => {
+    // TODO (Backend): DELETE /api/discs/{selectedDisc.id}
+    // On success:
+    // - Refetch discs list (or remove locally)
+    // - Clear selectedDisc & trackerDistance
     setSelectedDisc(null);
     setSyncStatus('idle');
     setTrackerDistance(null);
@@ -76,22 +108,32 @@ export default function DiscActionsDropdown({
     setShowAddPopup(true);
     setTrackingNumber('');
     setDiscName('');
+    setDiscType('');
   };
 
   const handleAddDisc = () => {
-    if (!trackingNumber.trim() || !discName.trim()) {
-      alert("Please enter both disc name and connection number");
+    if (!trackingNumber.trim() || !discName.trim() || !discType.trim()) {
+      alert("Please enter disc name, type, and connection number");
       return;
     }
 
-    alert(`Adding disc "${discName}" with connection number: ${trackingNumber}`);
+    // TODO (Backend): POST /api/discs
+    // Payload: {
+    //   name: discName.trim(),
+    //   type: discType.trim(),
+    //   connectionNumber: trackingNumber.trim()
+    // }
+    // On success: return created disc → add to currentDiscs (refetch or append)
+    alert(`Adding disc "${discName}" (${discType}) with connection number: ${trackingNumber}`);
     setShowAddPopup(false);
     closeDropdown();
   };
 
   const cancelAdd = () => setShowAddPopup(false);
 
-  // Timing Controls
+  // ──────────────────────────────────────────────────────────────
+  // Timing Controls – shared by Stopwatch & Accelerometer
+  // ──────────────────────────────────────────────────────────────
   const startTiming = () => {
     if (isRunning) return;
 
@@ -113,7 +155,7 @@ export default function DiscActionsDropdown({
     if (trackerDistance && trackerDistance > 0 && elapsedTime > 0.5) {
       setShowThrowResults(true);
 
-      // Auto-save only once per stop (when enabled)
+      // Auto-save only once per stop (if enabled)
       if (settings.autoSaveThrows && !justStopped) {
         handleSaveThrow();
         setJustStopped(true);
@@ -145,13 +187,20 @@ export default function DiscActionsDropdown({
     if (!trackerDistance || !elapsedTime) return;
 
     const throwData = {
+      discId: selectedDisc?.id, // TODO (Backend): Use real disc ID
       disc: selectedDisc ? `${selectedDisc.name} (${selectedDisc.type})` : 'Unknown disc',
       distance: trackerDistance,
       time: elapsedTime.toFixed(2),
       velocity: (trackerDistance / elapsedTime).toFixed(1),
       timestamp: new Date().toISOString(),
+      // TODO (Backend): Add sessionId if activeSession exists
+      // sessionId: activeSession?.id,
     };
 
+    // TODO (Backend): POST /api/throws
+    // Payload: throwData above
+    // On success: show success message/toast
+    // Optional: refresh user stats or session throw count
     alert(
       `Throw saved!\n\n` +
       `Disc: ${throwData.disc}\n` +
@@ -247,8 +296,10 @@ export default function DiscActionsDropdown({
         <AddDiscPopup
           trackingNumber={trackingNumber}
           discName={discName}
+          discType={discType}
           onChangeTrackingNumber={setTrackingNumber}
           onChangeDiscName={setDiscName}
+          onChangeDiscType={setDiscType}
           onAdd={handleAddDisc}
           onCancel={cancelAdd}
         />

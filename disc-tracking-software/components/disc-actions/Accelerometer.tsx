@@ -26,38 +26,7 @@ export default function Accelerometer({
   useEffect(() => {
     // === FUTURE HARDWARE INTEGRATION POINT ===
 
-    // Option 1: Web Sensors API (DeviceMotionEvent) - most browsers support this
-    // const handleMotion = (event: DeviceMotionEvent) => {
-    //   const acc = event.accelerationIncludingGravity;
-    //   if (acc?.x && acc?.y && acc?.z) {
-    //     const magnitude = Math.sqrt(acc.x**2 + acc.y**2 + acc.z**2);
-    //     const speedMps = magnitude; // rough speed estimate (needs calibration/filtering)
-    //     const speedMph = speedMps * 2.23694; // m/s → mph
-    //     setSpeed(speedMph);
-    //   }
-    // };
-    // window.addEventListener('devicemotion', handleMotion);
-    // return () => window.removeEventListener('devicemotion', handleMotion);
 
-    // Option 2: Web Bluetooth (for custom disc tracker hardware)
-    // async function connectBluetooth() {
-    //   try {
-    //     const device = await navigator.bluetooth.requestDevice({
-    //       filters: [{ services: ['your-custom-service-uuid'] }],
-    //     });
-    //     const server = await device.gatt?.connect();
-    //     // ... get characteristic and listen for acceleration data ...
-    //   } catch (err) {
-    //     console.error('Bluetooth connection failed:', err);
-    //   }
-    // }
-
-    // Option 3: Native bridge (Capacitor, React Native, etc.) for mobile apps
-    // Capacitor.Plugins.Accelerometer.addListener((data) => {
-    //   // process data.acceleration.x/y/z
-    // });
-
-    // For now: static 0 mph (no changes)
   }, []);
 
   // Auto-start timer when speed exceeds 10 mph (placeholder – real data will trigger this)

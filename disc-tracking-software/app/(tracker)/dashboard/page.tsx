@@ -1,3 +1,7 @@
+// app/dashboard/page.tsx (or wherever DashboardHome lives)
+// This is the main dashboard landing page after login.
+// It handles session creation/ending and conditionally shows the disc tracking UI.
+
 'use client';
 
 import { useState } from 'react';
@@ -6,26 +10,67 @@ import DiscActionsDropdown from '@/components/disc-actions/DiscActionsDropdown';
 import Link from 'next/link';
 
 export default function DashboardHome() {
+  // ──────────────────────────────────────────────────────────────
+  // Session State
+  // TODO (Backend): Replace local state with server-fetched active session
+  // Fetch on mount: GET /api/sessions/active (returns { id, name, startTime } or null)
+  // ──────────────────────────────────────────────────────────────
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [sessionNameInput, setSessionNameInput] = useState('');
   const [showStartPopup, setShowStartPopup] = useState(false);
   const [showEndPopup, setShowEndPopup] = useState(false);
 
+  // ──────────────────────────────────────────────────────────────
+  // Start Session
+  // TODO (Backend): POST /api/sessions
+  // Payload: { name: string }
+  // Response: { id: string, name: string, startTime: ISODate }
+  // On success: setActiveSession(response.name) or setActiveSession(response.id)
+  // ──────────────────────────────────────────────────────────────
   const handleStartSession = () => {
     if (!sessionNameInput.trim()) {
       alert('Please enter a session name');
       return;
     }
+
+    // TEMP: local state only – replace with API call
     setActiveSession(sessionNameInput.trim());
     setSessionNameInput('');
     setShowStartPopup(false);
+
+    // Example API integration (uncomment when ready):
+    // fetch('/api/sessions', {
+    //   method: 'POST',
+    //   headers: { 'Content-Type': 'application/json' },
+    //   body: JSON.stringify({ name: sessionNameInput.trim() })
+    // })
+    // .then(res => res.json())
+    // .then(data => setActiveSession(data.name || data.id))
+    // .catch(err => alert('Failed to start session'));
   };
 
+  // ──────────────────────────────────────────────────────────────
+  // End Session
+  // TODO (Backend): PATCH /api/sessions/:id/end or DELETE /api/sessions/active
+  // - Mark session as ended
+  // - Associate all throws in this session with sessionId
+  // - Return success or error
+  // ──────────────────────────────────────────────────────────────
   const handleEndSession = () => {
+    // TEMP: local state only – replace with API call
     setActiveSession(null);
     setShowEndPopup(false);
-    // Future: send session data to backend here
+
+    // Example API integration (uncomment when ready):
+    // fetch('/api/sessions/active/end', { method: 'PATCH' })
+    // .then(() => setActiveSession(null))
+    // .catch(err => alert('Failed to end session'));
   };
+
+  // TODO (Backend): Fetch current user info on mount
+  // Use next-auth session or GET /api/user to get real username
+  // Example: const { data: session } = useSession();
+  // Then: Welcome back, <span className="text-[#54c4c3]">{session?.user?.name}</span>
 
   return (
     <>
@@ -36,8 +81,9 @@ export default function DashboardHome() {
           <div className="max-w-5xl mx-auto text-center">
             <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-6">
               Welcome back, <span className="text-[#54c4c3]">Nathan</span>
+              {/* TODO (Backend): Replace "Nathan" with real username from auth/session */}
             </h1>
-          {/* take auth info for username when signed in */}
+
             <p className="text-lg md:text-xl text-white/70 max-w-3xl mx-auto mb-10">
               Select and sync your disc(s) to start tracking.
             </p>
@@ -52,6 +98,8 @@ export default function DashboardHome() {
                     { id: '3', name: 'Aviar', type: 'Putter' },
                     { id: '4', name: 'Thunderbird', type: 'Fairway Driver' },
                   ]}
+                  // TODO (Backend): Pass real user discs fetched from GET /api/discs
+                  // Also pass activeSession?.id if throws need to be associated with session
                 />
               </div>
             )}
@@ -86,7 +134,7 @@ export default function DashboardHome() {
                 </button>
               )}
 
-              {/* User Throw Statistics button – always below session button */}
+              {/* User Throw Statistics button – always visible */}
               <Link
                 href="/stats"
                 className="
@@ -101,6 +149,8 @@ export default function DashboardHome() {
               >
                 User Throw Statistics
               </Link>
+              {/* TODO (Backend): Later link to per-session stats */}
+              {/* e.g. /stats?sessionId={activeSession?.id} */}
             </div>
           </div>
         </section>
@@ -164,7 +214,7 @@ export default function DashboardHome() {
               <p className="text-white/80 mb-8 text-center">
                 Session "<strong>{activeSession}</strong>" will be ended.
                 <br />
-                All tracked saved tracked throws will be available on your throw statistics.
+                All tracked saved throws will be available on your throw statistics.
               </p>
 
               <div className="flex gap-4">

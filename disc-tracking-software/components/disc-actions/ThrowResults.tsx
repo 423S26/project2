@@ -11,11 +11,18 @@ import {
 import { useSettings, MetricKey } from '@/contexts/SettingsContext';
 import { DistanceUnit } from './types';
 
+// ──────────────────────────────────────────────────────────────
+// ThrowResults – displays flight path chart and key metrics after a throw
+// Backend integration points:
+//   - Replace fake metrics (RPM, avg height) with real data
+//   - Send throw data to server on auto-save or manual save
+// ──────────────────────────────────────────────────────────────
+
 type Props = {
-  distance: number;
-  time: number;
+  distance: number;          // in feet (from tracker)
+  time: number;              // flight time in seconds
   unit?: DistanceUnit;
-  onSaveThrow?: () => void;
+  onSaveThrow?: () => void;  // optional manual save callback
 };
 
 type DeviationPoint = {
@@ -25,22 +32,27 @@ type DeviationPoint = {
 
 export default function ThrowResults({ distance, time, unit = 'feet', onSaveThrow }: Props) {
   const { settings } = useSettings();
+
   const convert = (val: number) => (unit === 'meters' ? val * 0.3048 : val);
   const label = unit === 'meters' ? 'm' : 'ft';
 
   const displayedDistance = convert(distance).toFixed(1);
   const displayedVelocity = time > 0 ? (convert(distance) / time).toFixed(1) : '0.0';
   const displayedAvgHeight = (40 * 0.65 * (unit === 'meters' ? 0.3048 : 1)).toFixed(1);
+
+  // TODO (Backend): Replace fake RPM with real calculated value
+  // - Use gyro data or disc rotation sensor
+  // - Typical range: 300–700 RPM for most throws
   const fakeRpm = Math.round(350 + (distance / 400) * 250);
 
-  // Determine which metrics to show
+  // Determine which metrics to show based on user settings
   const showTime = settings.selectedMetrics.includes('time');
   const showDistance = settings.selectedMetrics.includes('distance');
   const showVelocity = settings.selectedMetrics.includes('velocity');
   const showRpm = settings.selectedMetrics.includes('rpm');
   const showHeight = settings.selectedMetrics.includes('height');
 
-  // Dynamic column count based on visible metrics
+  // Dynamic grid columns based on visible metrics - update deviation points with array for device data
   const visibleMetrics = [showTime, showDistance, showVelocity, showRpm, showHeight].filter(Boolean).length;
   const gridCols = visibleMetrics <= 2 ? 'grid-cols-2' : visibleMetrics <= 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-3 lg:grid-cols-5';
 
@@ -116,6 +128,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
     <div className="space-y-6">
       <h3 className="text-xl font-semibold text-white text-center">Throw Results</h3>
 
+      {/* Flight Path Chart */}
       <div className="bg-[#190f2A]/80 backdrop-blur border border-[#456fb6]/40 rounded-xl p-4 shadow-lg h-80">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 20, right: 20, left: 10, bottom: 40 }}>
@@ -177,7 +190,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
       </div>
 
       {/* Metrics Grid – dynamic columns based on selected metrics */}
-      <div className={`grid ${visibleMetrics <= 2 ? 'grid-cols-2' : visibleMetrics <= 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-3 lg:grid-cols-5'} gap-4 text-center overflow-hidden`}>
+      <div className={`grid ${gridCols} gap-4 text-center overflow-hidden`}>
         {showTime && (
           <div className="bg-[#223066]/60 rounded-lg p-3 sm:p-4 border border-[#764d9f]/30">
             <div className="text-base sm:text-lg font-bold text-[#54c4c3]">
@@ -224,7 +237,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
         )}
       </div>
 
-      {/* Save button – only if auto-save is OFF */}
+      {/* Save button – only shown when auto-save is OFF */}
       {!settings.autoSaveThrows && onSaveThrow && (
         <div className="flex justify-center mt-6">
           <button
@@ -236,11 +249,27 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
         </div>
       )}
 
+      {/* Feedback when auto-save is ON */}
       {settings.autoSaveThrows && (
         <p className="text-center text-sm text-green-400 mt-4">
           Throw auto-saved to records.
         </p>
       )}
+
+      {/* TODO (Backend): Replace alert with real save */}
+      {/* In parent DiscActionsDropdown.tsx, handleSaveThrow should POST to /api/throws */}
+      {/* Payload example: */}
+      {/* { */}
+      {/*   discId: selectedDisc?.id, */}
+      {/*   sessionId: activeSession?.id, // if sessions implemented */}
+      {/*   distance: trackerDistance, */}
+      {/*   time: elapsedTime, */}
+      {/*   velocity: displayedVelocity, */}
+      {/*   rpm: fakeRpm, // replace with real */}
+      {/*   avgHeight: displayedAvgHeight, // replace with real */}
+      {/*   timestamp: new Date().toISOString() */}
+      {/* } */}
+      {/* On success: show toast "Throw saved!" */}
     </div>
   );
 }

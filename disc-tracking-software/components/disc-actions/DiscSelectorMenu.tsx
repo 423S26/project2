@@ -1,10 +1,19 @@
 // components/disc-actions/DiscSelectorMenu.tsx
+'use client';
 
 import { Disc } from './types';
 
+// ──────────────────────────────────────────────────────────────
+// DiscSelectorMenu – dropdown menu for selecting, syncing, adding, and removing discs
+// Backend integration points:
+//   - Fetch real user discs (GET /api/discs)
+//   - Sync with hardware (POST /api/sync/:discId)
+//   - Add/remove disc (POST/DELETE /api/discs)
+// ──────────────────────────────────────────────────────────────
+
 type Props = {
   isOpen: boolean;
-  currentDiscs: Disc[];
+  currentDiscs: Disc[];                    // TODO (Backend): This should come from server-fetched data
   selectedDisc: Disc | null;
   showDiscList: boolean;
   syncStatus: 'idle' | 'success' | 'error';
@@ -33,6 +42,7 @@ export default function DiscSelectorMenu({
 
   return (
     <>
+      {/* Backdrop – clicks outside close the menu */}
       <div className="fixed inset-0 z-10" onClick={onClose} aria-hidden="true" />
 
       <div
@@ -64,9 +74,12 @@ export default function DiscSelectorMenu({
               </svg>
             </button>
 
-            {/* Disc List – drops down below the selector button */}
+            {/* Disc List – drops down below selector */}
             {showDiscList && (
               <div className="mt-1 w-full bg-[#190f2A] border border-[#456fb6]/60 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                {/* TODO (Backend): Replace static currentDiscs with real fetched data */}
+                {/* Fetch: GET /api/discs (user's tracked discs) */}
+                {/* On select: PATCH /api/user/active-disc or store in session */}
                 {currentDiscs.length > 0 ? (
                   currentDiscs.map((disc) => (
                     <button
@@ -92,7 +105,16 @@ export default function DiscSelectorMenu({
                 : 'text-white/40 cursor-not-allowed'
             }`}
             disabled={!selectedDisc}
-            onClick={onSync}
+            onClick={() => {
+              // TODO (Backend): Replace fake sync with real hardware connection
+              // Example:
+              // 1. Connect via Bluetooth/WebSocket using selectedDisc.connectionNumber
+              // 2. Request current distance from device
+              // 3. Update parent state: setTrackerDistance(realDistance)
+              // 4. Set syncStatus('success') or 'error'
+              // 5. Optional: POST /api/sync-logs { discId, timestamp, distance }
+              onSync();
+            }}
           >
             <svg className="w-6 h-6 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path
@@ -132,12 +154,21 @@ export default function DiscSelectorMenu({
             </svg>
             Add New Tracker Disc
           </button>
-
+          {/* TODO (Backend): onOpenAddPopup → opens AddDiscPopup */}
+          {/* In AddDiscPopup: POST /api/discs with { name, connectionNumber(if applicable) } */}
+          {/* On success: close popup, refresh disc list (re-fetch or append new disc to currentDiscs) */}
+          {/* Handle errors (e.g. duplicate connection number) and show feedback in popup */}
+          {/* later feature to add is flight predictions which can be used to compare the disc's trajectory to actual throw - not part of this version for the capstone but a continued update*/}
           {/* Remove Disc */}
           {selectedDisc && (
             <button
               className="w-full text-left px-6 py-4 text-base text-red-300 hover:bg-red-900/20 hover:text-red-200 transition flex items-center gap-4 rounded-lg"
-              onClick={onRemoveDisc}
+              onClick={() => {
+                // TODO (Backend): Trigger DELETE /api/discs/{selectedDisc.id}
+                // On click: show confirmation (e.g. RemoveConfirmPopup) → if confirmed, call onRemoveDisc()
+                // After success: onRemoveDisc() → parent removes from list & clears selectedDisc
+                onRemoveDisc();
+              }}
             >
               <svg className="w-6 h-6 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />

@@ -1,20 +1,30 @@
-// components/RemoveConfirmPopup.tsx
+// components/disc-actions/RemoveConfirmPopup.tsx
+'use client';
+
+// ──────────────────────────────────────────────────────────────
+// RemoveConfirmPopup – confirmation dialog before removing a tracked disc
+// Backend integration point: DELETE disc from user profile
+// ──────────────────────────────────────────────────────────────
+
 type Props = {
-  discName?: string;
-  onConfirm: () => void;
-  onCancel: () => void;
+  discName?: string;          // Name of disc being removed (for display)
+  onConfirm: () => void;      // Called when user confirms removal
+  onCancel: () => void;       // Called when user cancels
 };
 
 export default function RemoveConfirmPopup({ discName, onConfirm, onCancel }: Props) {
   return (
     <>
       <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-60" onClick={onCancel} />
+
       <div className="fixed inset-0 flex items-center justify-center z-70 px-4">
         <div className="bg-[#223066] rounded-xl p-6 w-full max-w-sm border border-[#764d9f]/50 shadow-2xl">
           <h3 className="text-lg font-semibold text-white mb-3">Remove Disc?</h3>
+
           <p className="text-white/80 mb-6">
-            Are you sure you want to remove <strong>{discName}</strong> from your tracked discs?
+            Are you sure you want to remove <strong>{discName ?? 'this disc'}</strong> from your tracked discs?
           </p>
+
           <div className="flex gap-4">
             <button
               className="flex-1 bg-gray-700 text-white py-3 rounded-lg hover:bg-gray-600 transition"
@@ -22,9 +32,32 @@ export default function RemoveConfirmPopup({ discName, onConfirm, onCancel }: Pr
             >
               Cancel
             </button>
+
             <button
               className="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition"
-              onClick={onConfirm}
+              onClick={() => {
+                // TODO (Backend): Call DELETE /api/discs/{discId} here
+                //
+                // Example implementation:
+                // fetch(`/api/discs/${selectedDisc?.id}`, { method: 'DELETE' })
+                //   .then(res => {
+                //     if (!res.ok) throw new Error('Failed to delete disc');
+                //     // Success: call onConfirm() to update UI (clear selected disc, refresh list)
+                //     onConfirm();
+                //   })
+                //   .catch(err => {
+                //     console.error(err);
+                //     alert('Failed to remove disc. Please try again.');
+                //   });
+                //
+                // Notes:
+                // - Use discId (not name) for deletion – pass discId as prop if available
+                // - On success: refetch user discs list in parent (DiscActionsDropdown)
+                // - Show loading state / disable button during request
+                // - Handle 404 (disc not found) or 403 (not authorized)
+
+                onConfirm(); // TEMP: local UI update – replace with API call
+              }}
             >
               Remove
             </button>
