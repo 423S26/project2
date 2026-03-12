@@ -6,16 +6,18 @@ package main
 
 import (
 	"database/sql" //placeholder before hooking up to actual database, but calls will be very similar in their place here
-	"encoding/json"
 	"io"
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 
 	"project2/disc-tracking-software/pb"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/lib/pq"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -31,15 +33,19 @@ const (
 
 type ThrowSession struct {
 	StartTime time.Time
-	StartPos  pb.Ping
-	EndPos    pb.Ping
+	StartPos  *pb.Ping
+	EndPos    *pb.Ping
 	MaxRPM    float64
 	IsActive  bool
 }
 
-var activeSessions = make(map[string]*ThrowSession)
+var (
+	sessionMu      sync.RWMutex
+	activeSessions = make(map[string]*ThrowSession)
+)
 
 func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
+	sessionMu.Lock()
 	session, exists := activeSessions[ping.DeviceId]
 
 	// INIT DETECTION: Launch
@@ -48,10 +54,11 @@ func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 	if !exists && currentRPM > 400 {
 		activeSessions[ping.DeviceId] = &ThrowSession{
 			StartTime: time.Unix(ping.Timestamp/1000, 0),
-			StartPos:  *ping,
+			StartPos:  ping,
 			MaxRPM:    currentRPM,
 			IsActive:  true,
 		}
+		sessionMu.Unlock()
 		broadcastStatus(hub, ping.DeviceId, "IN_FLIGHT")
 		return
 	}
@@ -66,43 +73,45 @@ func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 		// Trigger: RPM drops significantly AND Z-axis stabilizes at ~1G
 
 		if currentRPM < 100 && math.Abs(float64(ping.AccelZ)-1.0) < 0.2 {
-			session.EndPos = *ping
+			session.EndPos = ping
 			session.IsActive = false
 
-			// Finalize Throw Data
 			finalizeThrow(session)
-			broadcastStatus(hub, ping.DeviceId, "LANDED")
 
-			// Clean up session
 			delete(activeSessions, ping.DeviceId)
 
-			// to avoid a fake throw by someone accidentally tripping sensor
 			duration := session.EndPos.Timestamp - session.StartPos.Timestamp
+			sessionMu.Unlock()
+
+			broadcastStatus(hub, ping.DeviceId, "LANDED")
+
 			if float64(duration)/1000.0 < 1.5 {
-				// Discard data - it wasn't a real throw
 				return
 			}
+			return
 		}
 	}
+	sessionMu.Unlock()
 }
 
 // finalizeThrow handles any final processing or storage of a completed throw session.
 
 func finalizeThrow(session *ThrowSession) {
 	// Placeholder: Implement logic to persist throw data or trigger analytics.
-	// For now, just log the throw session.
 	log.Printf("Finalized throw: start=%v end=%v maxRPM=%.2f", session.StartPos, session.EndPos, session.MaxRPM)
 }
 
 // broadcastStatus sends a status update to all connected clients via the hub.
 
 func broadcastStatus(hub *Hub, deviceId string, status string) {
-	update := map[string]interface{}{
-		"device_id": deviceId,
-		"status":    status,
+	update := &pb.ThrowStatus{
+		DeviceId: deviceId,
+		Status:   status,
 	}
-	payload, _ := json.Marshal(update)
-	hub.broadcast <- payload
+	payload, err := proto.Marshal(update)
+	if err == nil {
+		hub.broadcast <- payload
+	}
 }
 
 //------------------------------------------
@@ -148,7 +157,7 @@ func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
 	// Distance between two points
 	dist := Haversine(p1.Latitude, p1.Longitude, p2.Latitude, p2.Longitude)
 
-	return dist / timeDelta // Result in meters per second
+	return dist / timeDelta
 }
 
 // Haversine calculates the great-circle distance between two points on the Earth.
@@ -197,6 +206,21 @@ func main() {
 	hub := NewHub()
 	go hub.Run()
 
+	dbUrl := os.Getenv("DATABASE_URL")
+	if dbUrl == "" {
+		log.Println("DATABASE_URL not set, DB features might fail if they require it")
+	} else {
+		log.Println("Found DATABASE_URL, attempting connection...")
+	}
+
+	db, err := sql.Open("postgres", dbUrl)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Start DB worker correctly
+	go dbWorker(db, hub, ping_queue)
+
 	r := gin.Default()
 
 	r.GET("/ws", func(c *gin.Context) {
@@ -207,8 +231,6 @@ func main() {
 		}
 		hub.register <- conn
 	})
-
-	go db_worker() //set backgorund go routine
 
 	r.POST("/api/v1/sync", func(c *gin.Context) {
 		body, err := io.ReadAll(c.Request.Body)
@@ -228,8 +250,10 @@ func main() {
 		for _, ping := range batch.GetPings() { //send ping in background queue
 			ping_queue <- ping
 
-			payload, _ := json.Marshal(ping) //Convert protbuf to JSON formatting
-			hub.broadcast <- payload
+			payload, err := proto.Marshal(ping) //Convert protbuf to binary format
+			if err == nil {
+				hub.broadcast <- payload
+			}
 		}
 
 		c.Status(http.StatusOK)
@@ -237,10 +261,6 @@ func main() {
 
 	log.Println("Server running on :8080")
 	r.Run(":8080")
-}
-
-func db_worker() {
-	panic("unimplemented")
 }
 
 // CONSTANT: The distance from the center of the disc to IMU chip.
@@ -273,15 +293,19 @@ func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 
 		if err == nil {
 			// 4. Broadcast the calculated data to Next.js via WebSocket
-			update := map[string]interface{}{
-				"device_id": ping.DeviceId,
-				"lat":       ping.Latitude,
-				"lon":       ping.Longitude,
-				"rpm":       math.Round(rpm),
-				"wobble":    wobble,
+			update := &pb.TelemetryUpdate{
+				DeviceId: ping.DeviceId,
+				Lat:      float64(ping.Latitude),
+				Lon:      float64(ping.Longitude),
+				Rpm:      math.Round(rpm),
+				Wobble:   wobble,
 			}
-			payload, _ := json.Marshal(update)
-			hub.broadcast <- payload
+			payload, err := proto.Marshal(update)
+			if err == nil {
+				hub.broadcast <- payload
+			}
+		} else {
+			log.Printf("DB Insert Error: %v\n", err)
 		}
 	}
 }

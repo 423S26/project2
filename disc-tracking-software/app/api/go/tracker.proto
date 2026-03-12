@@ -25,4 +25,19 @@ message SyncBatch {
   repeated Ping pings = 1;
 }
 
+// Server updates about throw phase (e.g. IN_FLIGHT, LANDED)
+message ThrowStatus {
+  string device_id = 1;
+  string status = 2;
+}
+
+// Server telemetry updates after processing
+message TelemetryUpdate {
+  string device_id = 1;
+  double lat = 2;
+  double lon = 3;
+  double rpm = 4;
+  double wobble = 5;
+}
+
 
