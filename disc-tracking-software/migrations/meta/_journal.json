@@ -8,6 +8,13 @@
       "when": 1771022012938,
       "tag": "0000_blue_the_twelve",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1773246998271,
+      "tag": "0001_elite_cammi",
+      "breakpoints": true
     }
   ]
 }
