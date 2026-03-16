@@ -15,6 +15,10 @@ vi.mock('@/components/disc-actions/DiscActionsDropdown', () => ({
   ),
 }));
 
+vi.mock('@/lib/actions/auth-actions', () => ({
+  getUserNameAction: vi.fn().mockResolvedValue('Test User'),
+}));
+
 describe('DashboardHome', () => {
   it('renders default state correctly', () => {
     render(<DashboardHome />);

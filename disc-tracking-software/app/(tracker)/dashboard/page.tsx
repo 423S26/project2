@@ -4,10 +4,11 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import DashboardHeader from '@/components/DashboardHeader';
 import DiscActionsDropdown from '@/components/disc-actions/DiscActionsDropdown';
 import Link from 'next/link';
+import { getUserNameAction } from '@/lib/actions/auth-actions';
 
 export default function DashboardHome() {
   // ──────────────────────────────────────────────────────────────
@@ -19,6 +20,13 @@ export default function DashboardHome() {
   const [sessionNameInput, setSessionNameInput] = useState('');
   const [showStartPopup, setShowStartPopup] = useState(false);
   const [showEndPopup, setShowEndPopup] = useState(false);
+  const [userName, setUserName] = useState<string>('');
+
+  useEffect(() => {
+    getUserNameAction().then((name) => {
+      if (name) setUserName(name);
+    });
+  }, []);
 
   // ──────────────────────────────────────────────────────────────
   // Start Session
@@ -80,8 +88,7 @@ export default function DashboardHome() {
         <section className="py-12 md:py-16 px-5 sm:px-8 md:px-12 lg:px-20">
           <div className="max-w-5xl mx-auto text-center">
             <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-6">
-              Welcome back, <span className="text-[#54c4c3]">Nathan</span>
-              {/* TODO (Backend): Replace "Nathan" with real username from auth/session */}
+              Welcome back, <span className="text-[#54c4c3]">{userName}</span>
             </h1>
 
             <p className="text-lg md:text-xl text-white/70 max-w-3xl mx-auto mb-10">
