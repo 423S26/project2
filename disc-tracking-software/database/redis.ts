@@ -5,4 +5,8 @@ import config from '@/lib/config';
 
 const redisClient = createClient({
   url: config.env.redisUrl,
-})
+});
+
+redisClient.on('error', (err) => console.log('Redis Client Error', err));
+
+await redisClient.connect();*/
