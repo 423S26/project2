@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest"
+    "test": "vitest",
+    "mobile": "npm run build && npx cap sync && npx cap open android"
   },
   "dependencies": {
     "@capacitor/android": "^8.2.0",
@@ -32,12 +33,15 @@
     "react-hook-form": "^7.71.2",
     "recharts": "^3.7.0",
     "sonner": "^2.0.7",
-    "tsx": "^4.21.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.6.0",
+<<<<<<< HEAD
     "@playwright/test": "^1.58.2",
+=======
+    "@swc/core": "^1.15.18",
+>>>>>>> 633be6a9b20957d31dca933473ae2ddbb7261aaf
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -47,14 +51,15 @@
     "@types/node": "^25.3.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.4",
+    "@vitejs/plugin-react-swc": "^4.3.0",
     "babel-plugin-react-compiler": "^1.0.0",
-    "drizzle-kit": "^0.18.1",
+    "drizzle-kit": "^0.31.9",
     "eslint": "^9.0.0",
     "eslint-config-next": "^16.1.6",
     "jsdom": "^28.1.0",
     "tailwindcss": "^4",
     "typescript": "5.9.3",
+    "unplugin-swc": "^1.5.9",
     "vitest": "^4.0.18"
   }
 }

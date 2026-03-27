@@ -13,9 +13,7 @@ import (
 	"os"
 	"sync"
 	"time"
-
 	"project2/disc-tracking-software/pb"
-
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 	"google.golang.org/protobuf/proto"
@@ -94,14 +92,11 @@ func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
 	sessionMu.Unlock()
 }
 
-// finalizeThrow handles any final processing or storage of a completed throw session.
-
 func finalizeThrow(session *ThrowSession) {
 	// Placeholder: Implement logic to persist throw data or trigger analytics.
 	log.Printf("Finalized throw: start=%v end=%v maxRPM=%.2f", session.StartPos, session.EndPos, session.MaxRPM)
 }
 
-// broadcastStatus sends a status update to all connected clients via the hub.
 
 func broadcastStatus(hub *Hub, deviceId string, status string) {
 	update := &pb.ThrowStatus{
@@ -116,7 +111,7 @@ func broadcastStatus(hub *Hub, deviceId string, status string) {
 
 //------------------------------------------
 
-// ValidatePing checks if the GPS data is high-quality enough to record
+
 func ValidatePing(p *pb.Ping) bool {
 	// HDOP < 2.0 is excellent, > 5.0 is junk.
 	// We ignore anything above 4.0 to prevent "jitter"
@@ -162,7 +157,8 @@ func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
 
 // Haversine calculates the great-circle distance between two points on the Earth.
 func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
-	const R = 6371000 // Earth radius in meters
+	const R = 6371000 // in meters
+
 	lat1Rad := lat1 * math.Pi / 180
 	lat2Rad := lat2 * math.Pi / 180
 	deltaLat := (lat2 - lat1) * math.Pi / 180
@@ -177,7 +173,6 @@ func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
 }
 
 // This takes raw G-force data and the sensor's offset from center
-
 func CalculateRPM(accelX, accelY float64, radiusMeters float64) float64 {
 
 	//calculate resultant acceleration (Centripetal Force) via Pythagorem theorem combining x and y axes
@@ -253,7 +248,8 @@ func main() {
 			payload, err := proto.Marshal(ping) //Convert protbuf to binary format
 			if err == nil {
 				hub.broadcast <- payload
-			}
+			}ls
+
 		}
 
 		c.Status(http.StatusOK)
@@ -270,21 +266,21 @@ const SensorRadiusMeters = 0.008 // Example: 8mm
 
 func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 	for ping := range queue {
-		// 1. Calculate RPM from Centripetal Acceleration
-		// Formula: w = sqrt(a/r) | RPM = (w * 60) / 2pi
+		// Calculate RPM from Centripetal Acceleration
+
 		resultantG := math.Sqrt(math.Pow(float64(ping.AccelX), 2) + math.Pow(float64(ping.AccelY), 2))
 		accelMS2 := resultantG * 9.80665
 
 		var rpm float64 = 0
+		
 		if resultantG > 0.1 { // Avoid division by zero/noise
 			omega := math.Sqrt(accelMS2 / SensorRadiusMeters)
 			rpm = (omega * 60) / (2 * math.Pi)
 		}
 
-		// 2. Measure Wobble (Z-axis variance)
 		wobble := math.Abs(float64(ping.AccelZ))
 
-		// 3. Persist to PostGIS
+		// Persist to PostGIS
 		_, err := db.Exec(`
 			INSERT INTO throws (device_id, location, hdop, rpm, wobble_g)
 			VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7)`,
@@ -292,7 +288,7 @@ func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 		)
 
 		if err == nil {
-			// 4. Broadcast the calculated data to Next.js via WebSocket
+			// Broadcast the calculated data to Next.js via WebSocket
 			update := &pb.TelemetryUpdate{
 				DeviceId: ping.DeviceId,
 				Lat:      float64(ping.Latitude),

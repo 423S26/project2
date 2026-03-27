@@ -1,5 +1,4 @@
 //This files will handle active connections so nothing crashes if a user closes browser or loses cell
-//Converting binaries to JSON also neccesary to make meta meta framework JS/TS happy
 
 package main
 

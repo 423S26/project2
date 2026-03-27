@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"project2/disc-tracking-software/pb" // Ensure this matches your module path
+	"project2/disc-tracking-software/pb"
 )
 
 // Mock Hub for testing since DetectThrowPhases uses it

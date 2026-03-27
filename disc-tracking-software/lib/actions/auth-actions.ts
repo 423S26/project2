@@ -183,3 +183,9 @@ export async function signUpAction(prevState: AuthState | undefined, formData: F
     return { error: "Failed to create account. Please try again." };
   }
 }
+
+export async function getUserNameAction() {
+  const { auth } = await import("@/auth");
+  const session = await auth();
+  return session?.user?.name || null;
+}
