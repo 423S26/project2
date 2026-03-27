@@ -78,19 +78,22 @@ Saved throws appear in the **User Throw Statistics** section, where you can:
 
 
 
-DEVELOPER DOCS: 
+### DEVELOPER DOCS: 
+
+*Development tools: Microsoft Visual Studio Code; NextJS, TailwindCSS, TypeScript, PostgresQL, Timescale DB, PostGIS, Upstash Redis.
 
 * Landing page was created using Next.js with TailwindCSS and TypeScript for styling. Universal styles have been applied to meet WCAG AA standards. For the backend, a file structure was established with 2 groups to differentiate between the website and web app. This is shown using () in the naming of folders for organizational purposes.
 * Components and other TSX styling are shown in PascalCase, with the  database using snake_case. 
 * Configs for auth have been started, the .env.local file is being used to handle environmental variables as well as backend API keys. Additional API calls are being routed through the api folder in the project. **NOTE: Env files are NOT public and are shared privately between contributors**
 * Backend Server will be done in GO, this interacts as the port for the web application to interact with the devices and send data packets for the web app to process and serve to the end user. Recharts, a Next.js library, handles the visualization of the data in chart and card form.
 * The embedded system will be written in C/C++ and flashed onto the physical device memory.
+* Automated testing for frontend and backend is handled using V-test. Code Rabbit and Dependabot tests are shown on GitHub. Playwright testing is shown in the test_suite folder in the GitHub repository. 
 
 HOW TO OBTAIN SOURCE CODE: This is shared through GitHub and downloading dependencies. To know which ones are to be downloaded, please refer to the project package.json file and run the command **"npm ci"**. This reads the package.json and package-lock.json and does a **c**lean **i**nstall. Do this instead of the general "npm install" as that will be much cleaner to work with for CI/CD pipelining.
 
 
 Planned Directory Structure: As mentioned in the developer docs.
-How to Build/Test: See Getting Started in bottom of this Readme file.
+How to Build/Test: See Getting Started at the bottom of this Readme file.
 How to release a version: Go to GitHub releases, draft a new release. This will create a new version to be tracked.
 Bug tracker (See Issues in GitHub): Next.js Bugs/ Warnings
 
