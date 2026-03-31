@@ -167,7 +167,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
                 border: '1px solid #54c4c3',
                 color: 'white',
               }}
-              formatter={(value: any, name?: string) => {
+              formatter={(value: any, name: string | number | undefined) => {
                 if (typeof value !== 'number' || Number.isNaN(value)) return '';
                 const converted = convert(value);
                 if (name === 'distance') return `${converted.toFixed(1)} ${label}`;
