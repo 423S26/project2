@@ -91,6 +91,9 @@ const AuthForm = <T extends FieldValues>({ type, schema, defaultValues, onSubmit
           <input 
             {...register('email' as Path<T>)}
             type="email"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             placeholder="email@example.com" 
             className="w-full p-2.5 bg-[#101835] border border-white/10 rounded-lg text-white placeholder:text-white/30 focus:outline-none focus:border-[#54c4c3] focus:ring-1 focus:ring-[#54c4c3] transition-colors"
           />

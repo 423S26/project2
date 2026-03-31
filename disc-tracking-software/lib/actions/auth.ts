@@ -2,7 +2,7 @@
 
 import { db } from "@/database/drizzle";
 import { usersTable } from "@/database/schema";
-import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { signIn, signOut } from "@/auth";
 import { AuthError } from "next-auth";
@@ -108,7 +108,7 @@ export const signUp = async (params: any) => {
     const existingUser = await db
       .select()
       .from(usersTable)
-      .where(eq(usersTable.email, email))
+      .where(sql`lower(${usersTable.email}) = ${email}`)
       .limit(1);
 
     if (existingUser.length > 0) {

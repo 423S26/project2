@@ -1,8 +1,10 @@
 import { z } from "zod";
 
+const emailSchema = z.string().trim().email("Invalid email address").transform((email) => email.toLowerCase());
+
 export const signupSchema = z.object({
   full_name: z.string().min(3, "Name must be at least 3 characters"),
-  email: z.string().email("Invalid email address"),
+  email: emailSchema,
   phone: z.string().min(10, "Phone number must be at least 10 characters"),
   password: z.string().min(8, "Password must be at least 8 characters"),
   confirm_password: z.string().min(8, "Password must be at least 8 characters"),
@@ -12,13 +14,13 @@ export const signupSchema = z.object({
 });
 
 export const signinSchema = z.object({
-  email: z.string().email("Invalid email address"),
+  email: emailSchema,
   password: z.string().min(1, "Password is required"),
 });
 
 export const updateProfileSchema = z.object({
   fullName: z.string().min(3, "Name must be at least 3 characters"),
-  email: z.string().email("Invalid email address"),
+  email: emailSchema,
   image: z.string().optional(),
 });
 
