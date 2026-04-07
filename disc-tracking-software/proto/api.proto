@@ -1,0 +1,143 @@
+syntax = "proto3";
+
+package disctracking;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "project2/disc-tracking-software/pb";
+
+// ============ SESSION MESSAGES ============
+
+message SessionRequest {
+  string device_id = 1;
+  string notes = 2;
+}
+
+message SessionResponse {
+  string id = 1;
+  string user_id = 2;
+  string device_id = 3;
+  string status = 4;
+  google.protobuf.Timestamp started_at = 5;
+  optional google.protobuf.Timestamp ended_at = 6;
+  int32 throw_count = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message GetActiveSessionsResponse {
+  repeated SessionResponse sessions = 1;
+}
+
+message EndSessionRequest {
+  string session_id = 1;
+}
+
+message EndSessionResponse {
+  string message = 1;
+  google.protobuf.Timestamp ended_at = 2;
+}
+
+// ============ DISC MESSAGES ============
+
+message DiscRequest {
+  string name = 1;
+  string type = 2;
+  int32 weight = 3;
+  string color = 4;
+}
+
+message DiscResponse {
+  string id = 1;
+  string user_id = 2;
+  string name = 3;
+  string type = 4;
+  int32 weight = 5;
+  string color = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message GetUserDiscsResponse {
+  repeated DiscResponse discs = 1;
+}
+
+message DeleteDiscRequest {
+  string disc_id = 1;
+}
+
+message DeleteDiscResponse {
+  string message = 1;
+  string id = 2;
+}
+
+// ============ THROW MESSAGES ============
+
+message ThrowRequest {
+  string session_id = 1;
+  string disc_id = 2;
+  double tee_lat = 3;
+  double tee_lon = 4;
+  optional double tee_alt = 5;
+  double found_lat = 6;
+  double found_lon = 7;
+  optional double found_alt = 8;
+  optional double distance = 9;
+  optional double max_rpm = 10;
+  optional double exit_velocity = 11;
+  optional double flight_time = 12;
+  optional string state = 13;
+  bool is_ob = 14;
+  optional double wobble_g = 15;
+  optional double hdop = 16;
+}
+
+message ThrowResponse {
+  string message = 1;
+  string id = 2;
+}
+
+// ============ USER SETTINGS MESSAGES ============
+
+message UserSettingsRequest {
+  optional double bag_location_lat = 1;
+  optional double bag_location_lon = 2;
+  string preferred_unit = 3;
+  bool notifications_enabled = 4;
+  bool auto_save_enabled = 5;
+}
+
+message UserSettingsResponse {
+  string id = 1;
+  string user_id = 2;
+  optional double bag_location_lat = 3;
+  optional double bag_location_lon = 4;
+  string preferred_unit = 5;
+  bool notifications_enabled = 6;
+  bool auto_save_enabled = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// ============ USER MESSAGES ============
+
+message UserResponse {
+  string id = 1;
+  string email = 2;
+  string name = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+// ============ ERROR RESPONSE ============
+
+message ErrorResponse {
+  string error = 1;
+  int32 code = 2;
+}
+
+// ============ GENERIC RESPONSE WRAPPERS ============
+
+message GenericMessage {
+  string message = 1;
+}
+
+message GenericId {
+  string id = 1;
+}

@@ -13,9 +13,9 @@ export type Disc = {
   id: string;           // Unique identifier (UUID or auto-generated string)
   name: string;         // User-friendly name (e.g. "Star Destroyer")
   type: string;         // Disc type/category (e.g. "Distance Driver", "Midrange", "Putter")
+  connectionNumber?: string;  // Hardware identifier (Bluetooth MAC, serial, etc.)
   
   // TODO (Backend): Add more fields as needed
-  // connectionNumber?: string;  // Hardware identifier (Bluetooth MAC, serial, etc.)
   // manufacturer?: string; - post capstone
   // plasticType?: string; - post capstone
   // weightGrams?: number; - post capstone

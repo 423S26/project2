@@ -4,6 +4,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "sonner";
 import { SettingsProvider } from "@/contexts/SettingsContext";
+import { DeviceProvider } from "@/contexts/DeviceContext";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -21,8 +22,10 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
         <SettingsProvider>  {/* ← wrap entire app */}
-          {children}
-          <Toaster richColors position="top-center" />
+          <DeviceProvider>
+            {children}
+            <Toaster richColors position="top-center" />
+          </DeviceProvider>
         </SettingsProvider>
       </body>
     </html>

@@ -1,0 +1,649 @@
+// Frontend API service to communicate with GO backend
+// Uses Protobuf encoding for all requests/responses
+// All requests are made to http://localhost:8080/api/v1
+
+import { ProtoEncoder, ProtoDecoder } from './pb/codec';
+import {
+  APIConnectionError,
+  ValidationError,
+  retryWithBackoff,
+  logError,
+  createDebugInfo,
+  assert,
+  assertNotNull,
+  assertType,
+} from './errors';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1";
+const API_TIMEOUT = 30000; // 30 seconds
+const MAX_RETRIES = 3;
+
+// Type-safe interfaces for frontend use
+export interface Disc {
+  id: string;
+  user_id: string;
+  name: string;
+  type: string;
+  weight: number;
+  color: string;
+  connectionNumber?: string;
+  created_at: string;
+}
+
+export interface Session {
+  id: string;
+  user_id: string;
+  device_id: string;
+  status: string;
+  started_at: string;
+  ended_at?: string;
+  throw_count: number;
+  created_at: string;
+}
+
+export interface UserSettings {
+  id: string;
+  user_id: string;
+  bag_location_lat?: number;
+  bag_location_lon?: number;
+  preferred_unit: string;
+  notifications_enabled: boolean;
+  auto_save_enabled: boolean;
+  updated_at: string;
+}
+
+// Helper function to get auth headers with validation
+function getAuthHeaders(): HeadersInit {
+  try {
+    const headers: HeadersInit = {
+      "Content-Type": "application/protobuf",
+      "Accept": "application/protobuf",
+    };
+
+    // For now, using X-User-ID header (replace with actual auth in production)
+    const userId = localStorage.getItem("userId") || "test-user";
+    assert(userId.length > 0, 'User ID is empty');
+    (headers as Record<string, string>)["X-User-ID"] = userId;
+
+    return headers;
+  } catch (error) {
+    logError(error instanceof Error ? error : new Error(String(error)), 'getAuthHeaders');
+    throw new ValidationError('Failed to construct auth headers', 'headers', null, 'valid HeadersInit');
+  }
+}
+
+// Helper function with timeout wrapper
+async function fetchWithTimeout(
+  resource: RequestInfo | URL,
+  options?: RequestInit,
+  timeout: number = API_TIMEOUT
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(resource, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        throw new APIConnectionError(
+          `Request timeout after ${timeout}ms`,
+          String(resource),
+          undefined,
+          {timeout, debug: createDebugInfo()}
+        );
+      }
+      const message = error.message.includes('Failed to fetch')
+        ? `Unable to reach API server at ${resource}. Verify the backend is running.`
+        : `Fetch failed: ${error.message}`;
+      throw new APIConnectionError(
+        message,
+        String(resource),
+        undefined,
+        {error: error.message, debug: createDebugInfo()}
+      );
+    }
+    throw new APIConnectionError(
+      'Unknown fetch error',
+      String(resource),
+      undefined,
+      {debug: createDebugInfo()}
+    );
+  }
+}
+
+// Helper function for Protobuf API requests with retry logic
+async function apiCallProtobuf<T>(
+  endpoint: string,
+  body?: Uint8Array,
+  method: string = "GET"
+): Promise<T> {
+  try {
+    assertNotNull(endpoint, 'endpoint');
+    assertType(endpoint, 'string', 'endpoint');
+    assert(endpoint.length > 0, 'Endpoint is empty');
+
+    if (body) {
+      assertType(body, 'object', 'body');
+      assert(body instanceof Uint8Array, 'Body must be Uint8Array');
+      assert(body.length > 0, 'Body is empty');
+    }
+
+    const options: RequestInit = {
+      method,
+      headers: getAuthHeaders(),
+    };
+
+    if (body) {
+      options.body = body as any;
+    }
+
+    // Wrap in retry logic for transient failures
+    const response = await retryWithBackoff(
+      async () => {
+        const resp = await fetchWithTimeout(`${API_BASE_URL}${endpoint}`, options);
+        
+        // Check response status
+        if (!resp.ok) {
+          const statusCode = resp.status;
+          const contentType = resp.headers.get("content-type");
+          
+          let errorMessage = `HTTP ${statusCode}`;
+          try {
+            if (contentType?.includes("protobuf")) {
+              const data = await resp.arrayBuffer();
+              if (data.byteLength > 0) {
+                const decoder = new ProtoDecoder(new Uint8Array(data));
+                const errorMsg = decoder.decodeMessage();
+                errorMessage = errorMsg.error || errorMessage;
+              }
+            } else if (contentType?.includes("json")) {
+              const errorData = await resp.json();
+              errorMessage = errorData.error || errorData.message || errorMessage;
+            }
+          } catch (parseError) {
+            if (typeof window === 'undefined') {
+              console.warn('[apiCallProtobuf] Failed to parse error response:', parseError);
+            }
+          }
+
+          throw new APIConnectionError(
+            errorMessage,
+            endpoint,
+            statusCode,
+            {
+              method,
+              bodyLength: body?.length,
+              debug: createDebugInfo(),
+            }
+          );
+        }
+
+        return resp;
+      },
+      MAX_RETRIES,
+      1000,
+      10000
+    );
+
+    // Decode response from protobuf
+    const contentType = response.headers.get("content-type");
+    if (contentType?.includes("protobuf")) {
+      const arrayBuffer = await response.arrayBuffer();
+      
+      assert(arrayBuffer.byteLength > 0, 'Response body is empty', {
+        endpoint,
+        method,
+      });
+
+      return new Uint8Array(arrayBuffer) as unknown as T;
+    } else if (contentType?.includes("json")) {
+      // Fallback to JSON if not protobuf
+      return response.json() as Promise<T>;
+    } else {
+      throw new APIConnectionError(
+        `Unexpected content-type: ${contentType || 'none'}`,
+        endpoint,
+        response.status,
+        {acceptedTypes: ['application/protobuf', 'application/json']}
+      );
+    }
+  } catch (error) {
+    if (error instanceof APIConnectionError) {
+      logError(error, 'apiCallProtobuf');
+      throw error;
+    }
+    const err = error instanceof Error ? error : new Error(String(error));
+    logError(err, 'apiCallProtobuf');
+    throw new APIConnectionError(
+      `API call failed: ${err.message}`,
+      endpoint,
+      undefined,
+      {error: err.message, debug: createDebugInfo()}
+    );
+  }
+}
+
+// Convert decoded proto response to frontend Session
+function decodeSession(decoder: ProtoDecoder): Session {
+  return {
+    id: decoder.decodeString(),
+    user_id: decoder.decodeString(),
+    device_id: decoder.decodeString(),
+    status: decoder.decodeString(),
+    started_at: new Date().toISOString(),
+    throw_count: 0,
+    created_at: new Date().toISOString(),
+  };
+}
+
+// Convert decoded proto response to frontend Disc
+function decodeDisc(decoder: ProtoDecoder): Disc {
+  return {
+    id: decoder.decodeString(),
+    user_id: decoder.decodeString(),
+    name: decoder.decodeString(),
+    type: decoder.decodeString(),
+    weight: 0,
+    color: decoder.decodeString(),
+    connectionNumber: decoder.decodeString(), // assuming it's added to proto
+    created_at: new Date().toISOString(),
+  };
+}
+
+// Session API
+export const sessionAPI = {
+  createSession: async (deviceId: string, notes?: string): Promise<Session> => {
+    try {
+      assertNotNull(deviceId, 'deviceId');
+      assertType(deviceId, 'string', 'deviceId');
+      assert(deviceId.length > 0, 'Device ID is empty');
+
+      const encoded = ProtoEncoder.encodeObject({
+        device_id: deviceId,
+        notes: notes || "",
+      });
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        "/sessions",
+        encoded,
+        "POST"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      return decodeSession(decoder);
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.createSession');
+      throw error;
+    }
+  },
+
+  endSession: async (sessionId: string): Promise<{message: string}> => {
+    try {
+      assertNotNull(sessionId, 'sessionId');
+      assertType(sessionId, 'string', 'sessionId');
+      assert(sessionId.length > 0, 'Session ID is empty');
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        `/sessions/${sessionId}/end`,
+        undefined,
+        "PATCH"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      const message = decoder.decodeString();
+      assert(message.length > 0, 'Received empty message from server');
+
+      return {message};
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.endSession');
+      throw error;
+    }
+  },
+
+  getActiveSessions: async (): Promise<Session[]> => {
+    try {
+      const response = await apiCallProtobuf<Uint8Array>("/sessions/active");
+
+      const decoder = new ProtoDecoder(response);
+      const sessions: Session[] = [];
+
+      // Decode multiple sessions
+      try {
+        while (decoder.getOffset() < response.length) {
+          // Try to decode tag
+          const tagValue = response[decoder.getOffset()];
+          if (!tagValue) break;
+          
+          sessions.push(decodeSession(decoder));
+        }
+      } catch (decodeError) {
+        if (sessions.length > 0 && typeof window === 'undefined') {
+          console.warn('[sessionAPI] Partial session list decoded:', {
+            decodedCount: sessions.length,
+            error: (decodeError as Error).message,
+          });
+        } else if (sessions.length === 0) {
+          throw decodeError;
+        }
+      }
+
+      return sessions.length > 0 ? sessions : [];
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.getActiveSessions');
+      throw error;
+    }
+  },
+};
+
+// Disc API
+export const discAPI = {
+  getUserDiscs: async (): Promise<Disc[]> => {
+    try {
+      const response = await apiCallProtobuf<Uint8Array>("/discs");
+
+      const decoder = new ProtoDecoder(response);
+      const discs: Disc[] = [];
+
+      try {
+        while (decoder.getOffset() < response.length) {
+          const tagValue = response[decoder.getOffset()];
+          if (!tagValue) break;
+          
+          discs.push(decodeDisc(decoder));
+        }
+      } catch (decodeError) {
+        if (discs.length > 0 && typeof window === 'undefined') {
+          console.warn('[discAPI] Partial disc list decoded:', {
+            decodedCount: discs.length,
+            error: (decodeError as Error).message,
+          });
+        } else if (discs.length === 0) {
+          throw decodeError;
+        }
+      }
+
+      return discs.length > 0 ? discs : [];
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'discAPI.getUserDiscs');
+      throw error;
+    }
+  },
+
+  createDisc: async (
+    name: string,
+    type: string,
+    weight: number,
+    color: string,
+    connectionNumber?: string
+  ): Promise<Disc> => {
+    try {
+      assertNotNull(name, 'name');
+      assertNotNull(type, 'type');
+      assertType(name, 'string', 'name');
+      assertType(type, 'string', 'type');
+      assertType(weight, 'number', 'weight');
+      assert(name.length > 0, 'Disc name is empty');
+      assert(type.length > 0, 'Disc type is empty');
+      assert(weight > 0, 'Disc weight must be positive');
+
+      const encoded = ProtoEncoder.encodeObject({
+        name,
+        type,
+        weight,
+        color,
+        connectionNumber,
+      });
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        "/discs",
+        encoded,
+        "POST"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      return decodeDisc(decoder);
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'discAPI.createDisc');
+      throw error;
+    }
+  },
+
+  deleteDisc: async (discId: string): Promise<{message: string}> => {
+    try {
+      assertNotNull(discId, 'discId');
+      assertType(discId, 'string', 'discId');
+      assert(discId.length > 0, 'Disc ID is empty');
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        `/discs/${discId}`,
+        undefined,
+        "DELETE"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      const message = decoder.decodeString();
+      assert(message.length > 0, 'Received empty message from server');
+
+      return {message};
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'discAPI.deleteDisc');
+      throw error;
+    }
+  },
+};
+
+// Throw API
+export const throwAPI = {
+  saveThrow: async (throwData: {
+    sessionId: string;
+    discId: string;
+    teeLat: number;
+    teeLon: number;
+    teeAlt?: number;
+    foundLat: number;
+    foundLon: number;
+    foundAlt?: number;
+    distance?: number;
+    maxRpm?: number;
+    exitVelocity?: number;
+    flightTime?: number;
+    state?: string;
+    isOb?: boolean;
+    wobbleG?: number;
+    hdop?: number;
+  }): Promise<{message: string; id: string}> => {
+    try {
+      // Validate required fields
+      assertNotNull(throwData, 'throwData');
+      assertNotNull(throwData.sessionId, 'sessionId');
+      assertNotNull(throwData.discId, 'discId');
+      assertNotNull(throwData.teeLat, 'teeLat');
+      assertNotNull(throwData.teeLon, 'teeLon');
+      assertNotNull(throwData.foundLat, 'foundLat');
+      assertNotNull(throwData.foundLon, 'foundLon');
+      
+      assertType(throwData.teeLat, 'number', 'teeLat');
+      assertType(throwData.teeLon, 'number', 'teeLon');
+      assertType(throwData.foundLat, 'number', 'foundLat');
+      assertType(throwData.foundLon, 'number', 'foundLon');
+
+      // Validate GPS coordinates are in valid range
+      assert(throwData.teeLat >= -90 && throwData.teeLat <= 90, 'Tee latitude out of range');
+      assert(throwData.teeLon >= -180 && throwData.teeLon <= 180, 'Tee longitude out of range');
+      assert(throwData.foundLat >= -90 && throwData.foundLat <= 90, 'Found latitude out of range');
+      assert(throwData.foundLon >= -180 && throwData.foundLon <= 180, 'Found longitude out of range');
+
+      const encoded = ProtoEncoder.encodeObject({
+        session_id: throwData.sessionId,
+        disc_id: throwData.discId,
+        tee_lat: throwData.teeLat,
+        tee_lon: throwData.teeLon,
+        tee_alt: throwData.teeAlt,
+        found_lat: throwData.foundLat,
+        found_lon: throwData.foundLon,
+        found_alt: throwData.foundAlt,
+        distance: throwData.distance,
+        max_rpm: throwData.maxRpm,
+        exit_velocity: throwData.exitVelocity,
+        flight_time: throwData.flightTime,
+        state: throwData.state,
+        is_ob: throwData.isOb,
+        wobble_g: throwData.wobbleG,
+        hdop: throwData.hdop,
+      });
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        "/throws",
+        encoded,
+        "POST"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      const message = decoder.decodeString();
+      const id = decoder.decodeString();
+      assert(message.length > 0, 'Received empty message from server');
+      assert(id.length > 0, 'Received empty ID from server');
+
+      return {message, id};
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.saveThrow');
+      throw error;
+    }
+  },
+};
+
+// User Settings API
+export const userSettingsAPI = {
+  getSettings: async (): Promise<UserSettings> => {
+    try {
+      const response = await apiCallProtobuf<Uint8Array>("/user/settings");
+
+      const decoder = new ProtoDecoder(response);
+      const id = decoder.decodeString();
+      const userId = decoder.decodeString();
+      const preferredUnit = decoder.decodeString();
+      const notificationsEnabled = decoder.decodeBoolean();
+      const autoSaveEnabled = decoder.decodeBoolean();
+
+      assert(id.length > 0, 'Received empty settings ID from server');
+      assert(userId.length > 0, 'Received empty user ID from server');
+
+      return {
+        id,
+        user_id: userId,
+        preferred_unit: preferredUnit,
+        notifications_enabled: notificationsEnabled,
+        auto_save_enabled: autoSaveEnabled,
+        updated_at: new Date().toISOString(),
+      };
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'userSettingsAPI.getSettings');
+      throw error;
+    }
+  },
+
+  updateSettings: async (settings: {
+    bagLocationLat?: number;
+    bagLocationLon?: number;
+    preferredUnit?: string;
+    notificationsEnabled?: boolean;
+    autoSaveEnabled?: boolean;
+  }): Promise<{message: string}> => {
+    try {
+      // Validate optional GPS coordinates if provided
+      if (settings.bagLocationLat !== undefined) {
+        assertType(settings.bagLocationLat, 'number', 'bagLocationLat');
+        assert(settings.bagLocationLat >= -90 && settings.bagLocationLat <= 90, 'Latitude out of range');
+      }
+      if (settings.bagLocationLon !== undefined) {
+        assertType(settings.bagLocationLon, 'number', 'bagLocationLon');
+        assert(settings.bagLocationLon >= -180 && settings.bagLocationLon <= 180, 'Longitude out of range');
+      }
+
+      const encoded = ProtoEncoder.encodeObject({
+        bag_location_lat: settings.bagLocationLat,
+        bag_location_lon: settings.bagLocationLon,
+        preferred_unit: settings.preferredUnit,
+        notifications_enabled: settings.notificationsEnabled,
+        auto_save_enabled: settings.autoSaveEnabled,
+      });
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        "/user/settings",
+        encoded,
+        "PATCH"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      const message = decoder.decodeString();
+      assert(message.length > 0, 'Received empty message from server');
+
+      return {message};
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'userSettingsAPI.updateSettings');
+      throw error;
+    }
+  },
+};
+
+// User API
+export const userAPI = {
+  getCurrentUser: async () => {
+    try {
+      const response = await apiCallProtobuf("/user");
+      const decoder = new ProtoDecoder(response as Uint8Array);
+      
+      const id = decoder.decodeString();
+      const email = decoder.decodeString();
+      const name = decoder.decodeString();
+
+      assert(id.length > 0, 'Received empty user ID from server');
+      assert(email.length > 0, 'Received empty email from server');
+
+      return {id, email, name};
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'userAPI.getCurrentUser');
+      throw error;
+    }
+  },
+
+  updateProfile: async (userData: { fullName?: string; email?: string }) => {
+    try {
+      if (userData.email !== undefined) {
+        assertType(userData.email, 'string', 'email');
+        assert(userData.email.includes('@'), 'Invalid email format');
+      }
+      if (userData.fullName !== undefined) {
+        assertType(userData.fullName, 'string', 'fullName');
+        assert(userData.fullName.length > 0, 'Full name is empty');
+      }
+
+      const encoded = ProtoEncoder.encodeObject({
+        full_name: userData.fullName,
+        email: userData.email,
+      });
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        "/user",
+        encoded,
+        "PATCH"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      const message = decoder.decodeString();
+      assert(message.length > 0, 'Received empty message from server');
+
+      return {message};
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'userAPI.updateProfile');
+      throw error;
+    }
+  },
+};

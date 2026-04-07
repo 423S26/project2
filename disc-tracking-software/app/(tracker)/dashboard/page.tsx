@@ -4,37 +4,126 @@ import { useState, useEffect } from 'react';
 import DashboardHeader from '@/components/DashboardHeader';
 import DiscActionsDropdown from '@/components/disc-actions/DiscActionsDropdown';
 import ThrowStatisticsOverlay from '@/components/ThrowStatisticsOverlay';
+import LiveTracker from '@/components/GoSocket';
 import Link from 'next/link';
 import { getUserNameAction } from '@/lib/actions/auth-actions';
+import { sessionAPI, discAPI } from '@/lib/api-client';
+import { toast } from 'sonner';
+import { useDevice } from '@/contexts/DeviceContext';
+
+interface Disc {
+  id: string;
+  name: string;
+  type: string;
+  color?: string;
+  weight?: number;
+  connectionNumber?: string;
+}
 
 export default function DashboardHome() {
-  const [activeSession, setActiveSession] = useState<string | null>(null);
+  // Session State - fetched from backend
+  const [activeSession, setActiveSession] = useState<any>(null);
   const [sessionNameInput, setSessionNameInput] = useState('');
   const [showStartPopup, setShowStartPopup] = useState(false);
   const [showEndPopup, setShowEndPopup] = useState(false);
   const [userName, setUserName] = useState<string>('');
   const [showStatisticsOverlay, setShowStatisticsOverlay] = useState(false);
+  const [userDiscs, setUserDiscs] = useState<Disc[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const { disconnectDevice, connectedDevice } = useDevice();
+
+  const getErrorMessage = (error: unknown, fallback: string): string => {
+    if (error instanceof Error && error.message) {
+      const message = error.message.replace(/^\[[^\]]+\]\s*/, '');
+      if (message.includes('Unable to reach API server') || message.includes('Failed to fetch')) {
+        return 'Unable to reach backend service. Please verify the API server is running.';
+      }
+      if (message.includes('Request timeout after')) {
+        return 'The request timed out. Please try again or check your network connection.';
+      }
+      return message;
+    }
+    return fallback;
+  };
 
   useEffect(() => {
+    // Fetch user name
     getUserNameAction().then((name) => {
       if (name) setUserName(name);
     });
+
+    // Fetch active sessions on mount
+    loadActiveSessions();
+    
+    // Fetch user discs
+    loadUserDiscs();
   }, []);
 
-  const handleStartSession = () => {
-    if (!sessionNameInput.trim()) {
-      alert('Please enter a session name');
-      return;
+  const loadActiveSessions = async () => {
+    try {
+      const sessions = await sessionAPI.getActiveSessions();
+      if (Array.isArray(sessions) && sessions.length > 0) {
+        setActiveSession(sessions[0]); // Use first active session
+      }
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Unable to load active sessions.'));
     }
-    setActiveSession(sessionNameInput.trim());
-    setSessionNameInput('');
-    setShowStartPopup(false);
   };
 
-  const handleEndSession = () => {
-    setActiveSession(null);
-    setShowEndPopup(false);
+  const loadUserDiscs = async () => {
+    try {
+      const discs = await discAPI.getUserDiscs();
+      setUserDiscs(discs || []);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Unable to load your discs.'));
+    }
   };
+
+  // Start Session - POST /api/sessions
+  const handleStartSession = async () => {
+    if (!sessionNameInput.trim()) {
+      toast.error('Please enter a session name');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const response = await sessionAPI.createSession(
+        connectedDevice?.deviceId || 'device-001',
+        sessionNameInput.trim()
+      );
+      setActiveSession(response);
+      setSessionNameInput('');
+      setShowStartPopup(false);
+      toast.success('Tracking session started!');
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Unable to start session.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // End Session - PATCH /api/sessions/:id/end
+  const handleEndSession = async () => {
+    if (!activeSession?.id) return;
+
+    setIsLoading(true);
+    try {
+      await sessionAPI.endSession(activeSession.id);
+      setActiveSession(null);
+      disconnectDevice(); // Disconnect device when session ends
+      setShowEndPopup(false);
+      toast.success('Tracking session ended');
+    } catch (error) {
+      console.error('[Dashboard] Failed to end session', {
+        sessionId: activeSession?.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      toast.error(getErrorMessage(error, 'Unable to end session.'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
   return (
     <>
@@ -44,63 +133,100 @@ export default function DashboardHome() {
         <section className="py-12 md:py-16 px-5 sm:px-8 md:px-12 lg:px-20">
           <div className="max-w-5xl mx-auto text-center">
             <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-6">
-              Welcome back, <span className="text-[#54c4c3]">{userName || 'Nathan'}</span>
+              Welcome back, <span className="text-[#54c4c3]">{userName}</span>
             </h1>
 
             <p className="text-lg md:text-xl text-white/70 max-w-3xl mx-auto mb-10">
               Select and sync your disc(s) to start tracking.
             </p>
 
+            {/* Disc Actions Dropdown – only shown during active session */}
             {activeSession && (
               <div className="flex justify-center mb-10">
                 <DiscActionsDropdown
-                  currentDiscs={[
-                    { id: '1', name: 'Star Destroyer', type: 'Distance Driver' },
-                    { id: '2', name: 'Buzz', type: 'Midrange' },
-                    { id: '3', name: 'Aviar', type: 'Putter' },
-                    { id: '4', name: 'Thunderbird', type: 'Fairway Driver' },
-                  ]}
+                  currentDiscs={userDiscs}
+                  sessionId={activeSession.id}
                 />
               </div>
             )}
 
+            {/* Live hardware telemetry card */}
+            <div className="max-w-2xl mx-auto mb-10">
+              <LiveTracker />
+            </div>
+
+            {/* Session button + Stats button – always together at bottom */}
             <div className="flex flex-col items-center gap-6 mt-12">
               {activeSession ? (
                 <button
                   onClick={() => setShowEndPopup(true)}
-                  className="w-full max-w-md px-10 py-4 text-lg font-medium bg-red-600/80 hover:bg-red-700 text-white rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500/50 text-center"
+                  className="
+                    w-full max-w-md px-10 py-4 text-lg font-medium
+                    bg-red-600/80 hover:bg-red-700 text-white
+                    rounded-xl transition-all duration-300 shadow-lg
+                    hover:shadow-xl hover:scale-105 focus:outline-none
+                    focus:ring-2 focus:ring-red-500/50 text-center
+                  "
                 >
                   End Session
                 </button>
               ) : (
                 <button
                   onClick={() => setShowStartPopup(true)}
-                  className="w-full max-w-md px-10 py-4 text-lg font-medium bg-[#54c4c3] hover:bg-[#3daaa9] text-black rounded-xl transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#54c4c3]/50 text-center"
+                  className="
+                    w-full max-w-md px-10 py-4 text-lg font-medium
+                    bg-[#54c4c3] hover:bg-[#3daaa9] text-black
+                    rounded-xl transition-all duration-300 shadow-lg
+                    hover:shadow-xl hover:scale-105 focus:outline-none
+                    focus:ring-2 focus:ring-[#54c4c3]/50 text-center
+                  "
                 >
                   Start Tracking Session
                 </button>
               )}
 
-              <button
-                onClick={() => setShowStatisticsOverlay(true)}
-                className="w-full max-w-md inline-flex items-center justify-center px-10 py-4 text-lg font-medium text-white bg-linear-to-r from-[#456fb6] to-[#764d9f] rounded-xl hover:from-[#54c4c3] hover:to-[#456fb6] transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#54c4c3]/50 text-center"
+              {/* User Throw Statistics button – always visible */}
+              <Link
+                href="/stats"
+                className="
+                  w-full max-w-md inline-flex items-center justify-center
+                  px-10 py-4 text-lg font-medium text-white
+                  bg-linear-to-r from-[#456fb6] to-[#764d9f]
+                  rounded-xl hover:from-[#54c4c3] hover:to-[#456fb6]
+                  transition-all duration-300 shadow-lg hover:shadow-xl
+                  hover:scale-105 focus:outline-none focus:ring-2
+                  focus:ring-[#54c4c3]/50 text-center
+                "
               >
                 User Throw Statistics
-              </button>
+              </Link>
+              {/* TODO (Backend): Later link to per-session stats */}
+              {/* e.g. /stats?sessionId={activeSession?.id} */}
             </div>
           </div>
         </section>
       </div>
 
+      {/* Throw Statistics Overlay */}
+      <ThrowStatisticsOverlay
+        isOpen={showStatisticsOverlay}
+        onClose={() => setShowStatisticsOverlay(false)}
+        activeSession={activeSession?.id || null}
+      />
+
       {/* Start Session Popup */}
       {showStartPopup && (
         <>
-          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50" onClick={() => setShowStartPopup(false)} />
+          <div
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
+            onClick={() => setShowStartPopup(false)}
+          />
           <div className="fixed inset-0 flex items-center justify-center z-60 px-4">
             <div className="bg-[#223066] rounded-xl p-8 w-full max-w-md border border-[#764d9f]/50 shadow-2xl">
               <h3 className="text-2xl font-semibold text-[#54c4c3] mb-6 text-center">
                 Start New Tracking Session
               </h3>
+
               <label className="block text-white/80 mb-2 font-medium">
                 Session Name (e.g. "Rose Park front 9")
               </label>
@@ -109,8 +235,18 @@ export default function DashboardHome() {
                 value={sessionNameInput}
                 onChange={(e) => setSessionNameInput(e.target.value)}
                 placeholder="Enter session name..."
-                className="w-full px-4 py-3 bg-[#190f2A] border border-[#456fb6]/60 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#54c4c3] focus:ring-2 focus:ring-[#54c4c3]/40 mb-6"
+                className="w-full px-4 py-3 bg-[#190f2A] border border-[#456fb6]/60 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#54c4c3] focus:ring-2 focus:ring-[#54c4c3]/40 mb-2"
               />
+              {!connectedDevice ? (
+                <div className="text-sm text-yellow-300 mb-4">
+                  No disc connected yet. You can still start a session, then select and sync a disc from the tracker view.
+                </div>
+              ) : (
+                <div className="text-sm text-green-300 mb-4">
+                  Connected device: {connectedDevice.discName}
+                </div>
+              )}
+
               <div className="flex gap-4">
                 <button
                   onClick={() => setShowStartPopup(false)}
@@ -121,6 +257,7 @@ export default function DashboardHome() {
                 <button
                   onClick={handleStartSession}
                   className="flex-1 bg-[#54c4c3] text-black py-3 rounded-lg hover:bg-[#3daaa9] transition font-medium"
+                  disabled={isLoading}
                 >
                   Confirm & Start
                 </button>
@@ -130,20 +267,23 @@ export default function DashboardHome() {
         </>
       )}
 
-      {/* End Session Confirmation Popup */}
+      {/* End Session Popup */}
       {showEndPopup && (
         <>
-          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50" onClick={() => setShowEndPopup(false)} />
+          <div
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
+            onClick={() => setShowEndPopup(false)}
+          />
           <div className="fixed inset-0 flex items-center justify-center z-60 px-4">
             <div className="bg-[#223066] rounded-xl p-8 w-full max-w-md border border-[#764d9f]/50 shadow-2xl">
-              <h3 className="text-2xl font-semibold text-white mb-6 text-center">
-                End Current Session?
+              <h3 className="text-2xl font-semibold text-red-400 mb-6 text-center">
+                End Tracking Session
               </h3>
-              <p className="text-white/80 mb-8 text-center">
-                Session "<strong>{activeSession}</strong>" will be ended.
-                <br />
-                All tracked throws will be available on your throw statistics.
+
+              <p className="text-white/80 mb-6 text-center">
+                Are you sure you want to end the current tracking session? This will stop all telemetry streaming.
               </p>
+
               <div className="flex gap-4">
                 <button
                   onClick={() => setShowEndPopup(false)}
@@ -155,24 +295,13 @@ export default function DashboardHome() {
                   onClick={handleEndSession}
                   className="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium"
                 >
-                  Confirm & End Session
+                  End Session
                 </button>
               </div>
             </div>
           </div>
         </>
       )}
-
-      {/* Throw Statistics Overlay */}
-      <ThrowStatisticsOverlay
-        isOpen={showStatisticsOverlay}
-        onClose={() => setShowStatisticsOverlay(false)}
-        activeSession={activeSession}
-        // TODO (Backend): Pass real session list and throws data
-        // Example props to add later:
-        // sessions={sessions}
-        // throws={throws}
-      />
     </>
   );
 }

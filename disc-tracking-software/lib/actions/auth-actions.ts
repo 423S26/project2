@@ -8,9 +8,6 @@ import { signIn } from "@/auth";
 import { AuthError } from "next-auth";
 import { z } from "zod";
 
-// --- Rate Limiting (Simple In-Memory for now) ---
-// Note: In a production serverless environment, this map won't be shared across instances.
-// For robust distributed rate limiting, consider Redis or a database table.
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 const MAX_ATTEMPTS = 8;
 const LOCKOUT_DURATION = 15 * 60 * 1000; // 15 minutes lockout

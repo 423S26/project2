@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"project2/disc-tracking-software/pb"
+	"google.golang.org/protobuf/proto"
 )
 
 // Mock Hub for testing since DetectThrowPhases uses it
@@ -97,5 +98,75 @@ func TestDetectThrowPhases(t *testing.T) {
 		// Good
 	default:
 		t.Errorf("Expected broadcast message on landing, got none")
+	}
+}
+
+func TestTelemetryUpdateProtobufContract(t *testing.T) {
+	input := &pb.TelemetryUpdate{
+		DeviceId: "disc-42",
+		Lat:      37.7749,
+		Lon:      -122.4194,
+		Rpm:      812,
+		Wobble:   0.123,
+	}
+
+	payload, err := proto.Marshal(input)
+	if err != nil {
+		t.Fatalf("failed to marshal TelemetryUpdate: %v", err)
+	}
+
+	if len(payload) == 0 {
+		t.Fatalf("expected non-empty telemetry payload")
+	}
+
+	decoded := &pb.TelemetryUpdate{}
+	if err := proto.Unmarshal(payload, decoded); err != nil {
+		t.Fatalf("failed to unmarshal TelemetryUpdate payload: %v", err)
+	}
+
+	if decoded.DeviceId != input.DeviceId {
+		t.Fatalf("device_id mismatch: got %q want %q", decoded.DeviceId, input.DeviceId)
+	}
+	if decoded.Lat != input.Lat {
+		t.Fatalf("lat mismatch: got %f want %f", decoded.Lat, input.Lat)
+	}
+	if decoded.Lon != input.Lon {
+		t.Fatalf("lon mismatch: got %f want %f", decoded.Lon, input.Lon)
+	}
+	if decoded.Rpm != input.Rpm {
+		t.Fatalf("rpm mismatch: got %f want %f", decoded.Rpm, input.Rpm)
+	}
+	if decoded.Wobble != input.Wobble {
+		t.Fatalf("wobble mismatch: got %f want %f", decoded.Wobble, input.Wobble)
+	}
+}
+
+func TestDetectThrowPhasesBroadcastPayloadIsThrowStatus(t *testing.T) {
+	hub := setupTestHub()
+	activeSessions = make(map[string]*ThrowSession)
+
+	deviceID := "device-status-1"
+	launchPing := &pb.Ping{
+		DeviceId:  deviceID,
+		Timestamp: time.Now().UnixMilli(),
+		AccelZ:    15.0,
+	}
+
+	DetectThrowPhases(launchPing, 500.0, hub)
+
+	select {
+	case payload := <-hub.broadcast:
+		msg := &pb.ThrowStatus{}
+		if err := proto.Unmarshal(payload, msg); err != nil {
+			t.Fatalf("expected ThrowStatus protobuf payload, unmarshal failed: %v", err)
+		}
+		if msg.DeviceId != deviceID {
+			t.Fatalf("unexpected device id: got %q want %q", msg.DeviceId, deviceID)
+		}
+		if msg.Status != "IN_FLIGHT" {
+			t.Fatalf("unexpected status: got %q want %q", msg.Status, "IN_FLIGHT")
+		}
+	default:
+		t.Fatalf("expected broadcast payload but channel was empty")
 	}
 }

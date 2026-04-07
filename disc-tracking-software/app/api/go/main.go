@@ -218,6 +218,14 @@ func main() {
 
 	r := gin.Default()
 
+	// Protobuf Content-Type Middleware
+	r.Use(func(c *gin.Context) {
+		if c.GetHeader("Content-Type") == "application/protobuf" {
+			c.Header("Content-Type", "application/protobuf")
+		}
+		c.Next()
+	})
+
 	r.GET("/ws", func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
@@ -244,16 +252,43 @@ func main() {
 
 		for _, ping := range batch.GetPings() { //send ping in background queue
 			ping_queue <- ping
-
-			payload, err := proto.Marshal(ping) //Convert protbuf to binary format
-			if err == nil {
-				hub.broadcast <- payload
-			}ls
-
 		}
 
 		c.Status(http.StatusOK)
 	})
+
+	// Auth middleware mock - In production, integrate with your actual auth system
+	authMiddleware := func(c *gin.Context) {
+		// Extract user ID from JWT or session - for now using a default for testing
+		userID := c.GetHeader("X-User-ID")
+		if userID == "" {
+			userID = "test-user" // Remove this in production
+		}
+		c.Set("userID", userID)
+		c.Next()
+	}
+
+	// REST API Routes for Sessions
+	api := r.Group("/api/v1")
+	api.Use(authMiddleware)
+	{
+		// Session management
+		api.POST("/sessions", CreateSession(db))
+		api.PATCH("/sessions/:id/end", EndSession(db))
+		api.GET("/sessions/active", GetActiveSessions(db))
+
+		// Disc management
+		api.GET("/discs", GetUserDiscs(db))
+		api.POST("/discs", CreateDisc(db))
+		api.DELETE("/discs/:id", DeleteDisc(db))
+
+		// Throw management
+		api.POST("/throws", SaveThrow(db))
+
+		// User settings
+		api.GET("/user/settings", GetUserSettings(db))
+		api.PATCH("/user/settings", UpdateUserSettings(db))
+	}
 
 	log.Println("Server running on :8080")
 	r.Run(":8080")
