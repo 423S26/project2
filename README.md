@@ -9,6 +9,9 @@ This software includes: Add or remove tracked discs, view flight stats, record t
 WANT TO REPORT A BUG OR SUGGEST A FEATURE?
 Contact Us: moshernat@hotmail.com, wearewebtastic@gmail.com
 
+USER TESTING SYNTHESIS:
+https://docs.google.com/document/d/1xU23ADB9mdpHPeGq8i432nKedHnsL4S46RE8OTLQGqE/edit?usp=sharing
+
 
 USER DOCS: 
 * Interface incorporates WCAG AA styling to comply with ADA standards for web development.
