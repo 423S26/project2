@@ -12,6 +12,7 @@ import RemoveConfirmPopup from './RemoveConfirmPopup';
 import AddDiscPopup from './AddDiscPopup';
 import { Disc } from './types';
 import { discAPI, throwAPI } from '@/lib/api-client';
+import { bleManager } from '@/lib/ble';
 import { toast } from 'sonner';
 
 type DiscActionsDropdownProps = {
@@ -59,6 +60,13 @@ export default function DiscActionsDropdown({
     setDiscs(currentDiscs);
   }, [currentDiscs]);
 
+  // Handle BLE disconnection when device changes
+  useEffect(() => {
+    if (!connectedDevice) {
+      bleManager.disconnect();
+    }
+  }, [connectedDevice]);
+
   const toggleDropdown = () => setIsOpen(!isOpen);
   const closeDropdown = () => {
     setIsOpen(false);
@@ -74,17 +82,33 @@ export default function DiscActionsDropdown({
     setShowDiscList(false);
   };
 
-  const handleSync = () => {
+  const handleSync = async () => {
     if (!selectedDisc) return;
 
-    // Connect to hardware using the disc's connection number as device ID
-    const deviceId = selectedDisc.connectionNumber || `disc-${selectedDisc.id}`;
-    connectDevice(deviceId, selectedDisc.name);
+    if (selectedDisc.connectionNumber && selectedDisc.connectionNumber.length !== 17) {
+      toast.error('Device MAC address must be exactly 17 characters. Please check the tracking number.');
+      setSyncStatus('error');
+      return;
+    }
 
-    setSyncStatus('success');
-    setTrackerDistance(285); // Placeholder distance - in production, get from hardware
-    closeDropdown();
-    toast.success(`Connected to ${selectedDisc.name}. Telemetry streaming active.`);
+    setSyncStatus('idle');
+    bleManager.disconnect();
+
+    try {
+      // Connect to hardware using Web Bluetooth
+      await bleManager.connect(selectedDisc.connectionNumber || selectedDisc.id);
+      
+      // Connect to device context for WebSocket
+      connectDevice(selectedDisc.connectionNumber || selectedDisc.id, selectedDisc.name);
+
+      setSyncStatus('success');
+      setTrackerDistance(285); // Placeholder distance - will be updated from telemetry
+      closeDropdown();
+      toast.success(`Connected to ${selectedDisc.name}. Telemetry streaming active.`);
+    } catch (error) {
+      setSyncStatus('error');
+      toast.error(getErrorMessage(error, 'Unable to connect to device. Check Bluetooth and try again.'));
+    }
   };
 
   const handleRemoveDisc = () => setShowRemoveConfirm(true);
@@ -256,10 +280,17 @@ export default function DiscActionsDropdown({
       )}
 
       {syncStatus === 'success' && trackerDistance !== null && (
-        <TrackerDisplay
-          distance={trackerDistance}
-          unit={settings.distanceUnit}
-        />
+        <>
+          {selectedDisc?.connectionNumber && (
+            <div className="text-xs text-white/60 mb-3 font-mono">
+              MAC: {selectedDisc.connectionNumber}
+            </div>
+          )}
+          <TrackerDisplay
+            distance={trackerDistance}
+            unit={settings.distanceUnit}
+          />
+        </>
       )}
 
       {syncStatus === 'success' && trackerDistance !== null && (

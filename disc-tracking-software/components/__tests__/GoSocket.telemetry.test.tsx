@@ -5,6 +5,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import LiveTracker from '../GoSocket';
+import { DeviceProvider } from '../../contexts/DeviceContext';
 
 function encodeVarint(value: number): number[] {
   const out: number[] = [];
@@ -103,7 +104,11 @@ describe('GoSocket telemetry wiring', () => {
   });
 
   it('renders live telemetry values from backend TelemetryUpdate payload', async () => {
-    render(<LiveTracker />);
+    render(
+      <DeviceProvider>
+        <LiveTracker />
+      </DeviceProvider>
+    );
 
     const ws = MockWebSocket.instances[0];
     expect(ws).toBeDefined();
@@ -136,7 +141,11 @@ describe('GoSocket telemetry wiring', () => {
   });
 
   it('shows disconnected/error state when payload schema is invalid', async () => {
-    render(<LiveTracker />);
+    render(
+      <DeviceProvider>
+        <LiveTracker />
+      </DeviceProvider>
+    );
 
     const ws = MockWebSocket.instances[0];
     expect(ws).toBeDefined();

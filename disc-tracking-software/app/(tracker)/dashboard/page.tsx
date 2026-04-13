@@ -152,7 +152,7 @@ export default function DashboardHome() {
 
             {/* Live hardware telemetry card */}
             <div className="max-w-2xl mx-auto mb-10">
-              <LiveTracker />
+              <LiveTracker activeSessionId={activeSession?.id} />
             </div>
 
             {/* Session button + Stats button – always together at bottom */}

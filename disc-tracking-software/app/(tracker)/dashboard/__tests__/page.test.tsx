@@ -4,6 +4,8 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import DashboardHome from '../page';
 import { describe, it, expect, vi } from 'vitest';
+import { DeviceProvider } from '@/contexts/DeviceContext';
+import { act } from 'react';
 
 vi.mock('@/components/DashboardHeader', () => ({
   default: () => <div data-testid="dashboard-header">Header</div>,
@@ -21,7 +23,11 @@ vi.mock('@/lib/actions/auth-actions', () => ({
 
 describe('DashboardHome', () => {
   it('renders default state correctly', () => {
-    render(<DashboardHome />);
+    render(
+      <DeviceProvider>
+        <DashboardHome />
+      </DeviceProvider>
+    );
 
     expect(screen.getByText(/Welcome back/i));
     expect(screen.getByText(/Start Tracking Session/i));
@@ -30,22 +36,38 @@ describe('DashboardHome', () => {
   });
 
   it('opens start session popup when "Start Tracking Session" is clicked', () => {
-    render(<DashboardHome />);
+    render(
+      <DeviceProvider>
+        <DashboardHome />
+      </DeviceProvider>
+    );
     
     const startButton = screen.getByText(/Start Tracking Session/i);
-    fireEvent.click(startButton);
+    act(() => {
+      fireEvent.click(startButton);
+    });
     
     expect(screen.getByText(/Start New Tracking Session/i));
   });
 
   it('starts a session when a valid name is entered', () => {
-    render(<DashboardHome />);
+    render(
+      <DeviceProvider>
+        <DashboardHome />
+      </DeviceProvider>
+    );
     
-    fireEvent.click(screen.getByText(/Start Tracking Session/i));
+    act(() => {
+      fireEvent.click(screen.getByText(/Start Tracking Session/i));
+    });
     
     const input = screen.getByPlaceholderText(/Enter session name.../i);
-    fireEvent.change(input, { target: { value: 'Morning Round' } });
-    fireEvent.click(screen.getByText(/Confirm & Start/i));
+    act(() => {
+      fireEvent.change(input, { target: { value: 'Morning Round' } });
+    });
+    act(() => {
+      fireEvent.click(screen.getByText(/Confirm & Start/i));
+    });
     
     expect(screen.getByText(/End Session/i));
     expect(screen.queryByText(/Start Tracking Session/i)).not;
@@ -56,9 +78,17 @@ describe('DashboardHome', () => {
 
     const alertMock = vi.spyOn(window, 'alert').mockImplementation(() => {});
     
-    render(<DashboardHome />);
-    fireEvent.click(screen.getByText(/Start Tracking Session/i));
-    fireEvent.click(screen.getByText(/Confirm & Start/i));
+    render(
+      <DeviceProvider>
+        <DashboardHome />
+      </DeviceProvider>
+    );
+    act(() => {
+      fireEvent.click(screen.getByText(/Start Tracking Session/i));
+    });
+    act(() => {
+      fireEvent.click(screen.getByText(/Confirm & Start/i));
+    });
     
     expect(alertMock).toHaveBeenCalledWith('Please enter a session name');
     
@@ -66,13 +96,25 @@ describe('DashboardHome', () => {
   });
 
   it('ends session correctly', () => {
-    render(<DashboardHome />);
+    render(
+      <DeviceProvider>
+        <DashboardHome />
+      </DeviceProvider>
+    );
 
-    fireEvent.click(screen.getByText(/Start Tracking Session/i));
-    fireEvent.change(screen.getByPlaceholderText(/Enter session name.../i), { target: { value: 'Test' } });
-    fireEvent.click(screen.getByText(/Confirm & Start/i));
+    act(() => {
+      fireEvent.click(screen.getByText(/Start Tracking Session/i));
+    });
+    act(() => {
+      fireEvent.change(screen.getByPlaceholderText(/Enter session name.../i), { target: { value: 'Test' } });
+    });
+    act(() => {
+      fireEvent.click(screen.getByText(/Confirm & Start/i));
+    });
     
-    fireEvent.click(screen.getByText(/End Session/i));
+    act(() => {
+      fireEvent.click(screen.getByText(/End Session/i));
+    });
   
     expect(screen.getByText(/End Current Session\?/i));
   

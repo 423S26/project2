@@ -230,17 +230,140 @@ async function apiCallProtobuf<T>(
   }
 }
 
+function skipUnknownField(decoder: ProtoDecoder, wireType: number): void {
+  switch (wireType) {
+    case 0:
+      decoder.decodeVarint();
+      break;
+    case 1:
+      decoder.readBytes(8);
+      break;
+    case 2: {
+      const length = decoder.decodeVarint();
+      decoder.readBytes(length);
+      break;
+    }
+    case 5:
+      decoder.readBytes(4);
+      break;
+    default:
+      throw new Error(`Unsupported wire type: ${wireType}`);
+  }
+}
+
+function decodeProtoTimestamp(decoder: ProtoDecoder): string {
+  const length = decoder.decodeVarint();
+  if (length === 0) {
+    return '';
+  }
+
+  const bytes = decoder.readBytes(length);
+  const nested = new ProtoDecoder(bytes);
+  let seconds = 0;
+  let nanos = 0;
+
+  while (nested.getOffset() < bytes.length) {
+    const tag = nested.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    if (wireType !== 0) {
+      skipUnknownField(nested, wireType);
+      continue;
+    }
+
+    if (fieldNumber === 1) {
+      seconds = nested.decodeVarint();
+    } else if (fieldNumber === 2) {
+      nanos = nested.decodeVarint();
+    } else {
+      nested.decodeVarint();
+    }
+  }
+
+  return new Date(seconds * 1000 + nanos / 1000000).toISOString();
+}
+
 // Convert decoded proto response to frontend Session
-function decodeSession(decoder: ProtoDecoder): Session {
-  return {
-    id: decoder.decodeString(),
-    user_id: decoder.decodeString(),
-    device_id: decoder.decodeString(),
-    status: decoder.decodeString(),
-    started_at: new Date().toISOString(),
+function decodeSession(data: Uint8Array): Session {
+  const decoder = new ProtoDecoder(data);
+  const session: Session = {
+    id: '',
+    user_id: '',
+    device_id: '',
+    status: '',
+    started_at: '',
     throw_count: 0,
-    created_at: new Date().toISOString(),
+    created_at: '',
   };
+
+  while (decoder.getOffset() < data.length) {
+    const tag = decoder.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    switch (fieldNumber) {
+      case 1:
+        session.id = decoder.decodeString();
+        break;
+      case 2:
+        session.user_id = decoder.decodeString();
+        break;
+      case 3:
+        session.device_id = decoder.decodeString();
+        break;
+      case 4:
+        session.status = decoder.decodeString();
+        break;
+      case 5:
+        session.started_at = decodeProtoTimestamp(decoder);
+        break;
+      case 6:
+        // We intentionally ignore ended_at for this simplified frontend model.
+        decodeProtoTimestamp(decoder);
+        break;
+      case 7:
+        session.throw_count = decoder.decodeVarint();
+        break;
+      case 8:
+        session.created_at = decodeProtoTimestamp(decoder);
+        break;
+      default:
+        skipUnknownField(decoder, wireType);
+        break;
+    }
+  }
+
+  if (!session.started_at) {
+    session.started_at = new Date().toISOString();
+  }
+  if (!session.created_at) {
+    session.created_at = session.started_at;
+  }
+
+  return session;
+}
+
+function decodeSessionList(data: Uint8Array): Session[] {
+  const decoder = new ProtoDecoder(data);
+  const sessions: Session[] = [];
+
+  while (decoder.getOffset() < data.length) {
+    const tag = decoder.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    if (fieldNumber === 1 && wireType === 2) {
+      const length = decoder.decodeVarint();
+      const bytes = decoder.readBytes(length);
+      sessions.push(decodeSession(bytes));
+      continue;
+    }
+
+    skipUnknownField(decoder, wireType);
+  }
+
+  return sessions;
 }
 
 // Convert decoded proto response to frontend Disc
@@ -276,8 +399,7 @@ export const sessionAPI = {
         "POST"
       );
 
-      const decoder = new ProtoDecoder(response);
-      return decodeSession(decoder);
+      return decodeSession(response);
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.createSession');
       throw error;
@@ -311,29 +433,7 @@ export const sessionAPI = {
     try {
       const response = await apiCallProtobuf<Uint8Array>("/sessions/active");
 
-      const decoder = new ProtoDecoder(response);
-      const sessions: Session[] = [];
-
-      // Decode multiple sessions
-      try {
-        while (decoder.getOffset() < response.length) {
-          // Try to decode tag
-          const tagValue = response[decoder.getOffset()];
-          if (!tagValue) break;
-          
-          sessions.push(decodeSession(decoder));
-        }
-      } catch (decodeError) {
-        if (sessions.length > 0 && typeof window === 'undefined') {
-          console.warn('[sessionAPI] Partial session list decoded:', {
-            decodedCount: sessions.length,
-            error: (decodeError as Error).message,
-          });
-        } else if (sessions.length === 0) {
-          throw decodeError;
-        }
-      }
-
+      const sessions = decodeSessionList(response);
       return sessions.length > 0 ? sessions : [];
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.getActiveSessions');

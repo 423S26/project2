@@ -3,6 +3,7 @@
 
 import {
   ProtoBufferError,
+  FirmwareConnectionError,
   ValidationError,
   BoundsError,
   assert,
@@ -51,6 +52,140 @@ export function decodeMessage(data: Uint8Array): any {
     logError(error instanceof Error ? error : new Error(String(error)), 'decodeMessage');
     throw error;
   }
+}
+
+/**
+ * Decode Ping message from protobuf binary data
+ */
+export function decodePing(data: Uint8Array): PingData {
+  try {
+    const decoder = new ProtoDecoder(data);
+    
+    let device_id = '';
+    let lat = 0;
+    let lon = 0;
+    let alt = 0;
+    let speed_mps = 0;
+    let heading = 0;
+    let hdop = 0;
+    let sats = 0;
+    let temp_c = 0;
+    let accel_x = 0;
+    let accel_y = 0;
+    let accel_z = 0;
+    let gyro_x = 0;
+    let gyro_y = 0;
+    let gyro_z = 0;
+    let timestamp = 0;
+
+    while (decoder.getOffset() < data.length) {
+      try {
+        const tag = decoder.decodeVarint();
+        const wireType = tag & 0x07;
+        const fieldNumber = tag >>> 3;
+
+        if (fieldNumber === 1) {
+          device_id = decoder.decodeString();
+        } else if (fieldNumber === 2) {
+          lat = decoder.decodeDouble();
+        } else if (fieldNumber === 3) {
+          lon = decoder.decodeDouble();
+        } else if (fieldNumber === 4) {
+          alt = decoder.decodeDouble();
+        } else if (fieldNumber === 5) {
+          speed_mps = decoder.decodeDouble();
+        } else if (fieldNumber === 6) {
+          heading = decoder.decodeDouble();
+        } else if (fieldNumber === 7) {
+          hdop = decoder.decodeDouble();
+        } else if (fieldNumber === 8) {
+          sats = decoder.decodeVarint();
+        } else if (fieldNumber === 9) {
+          temp_c = decoder.decodeDouble();
+        } else if (fieldNumber === 10) {
+          accel_x = decoder.decodeDouble();
+        } else if (fieldNumber === 11) {
+          accel_y = decoder.decodeDouble();
+        } else if (fieldNumber === 12) {
+          accel_z = decoder.decodeDouble();
+        } else if (fieldNumber === 13) {
+          gyro_x = decoder.decodeDouble();
+        } else if (fieldNumber === 14) {
+          gyro_y = decoder.decodeDouble();
+        } else if (fieldNumber === 15) {
+          gyro_z = decoder.decodeDouble();
+        } else if (fieldNumber === 16) {
+          timestamp = decoder.decodeVarint();
+        } else {
+          // Skip unknown fields
+          if (wireType === 2) {
+            const length = decoder.decodeVarint();
+            decoder.readBytes(length);
+          } else if (wireType === 0 || wireType === 1 || wireType === 5) {
+            if (wireType === 1) decoder.readBytes(8);
+            else if (wireType === 5) decoder.readBytes(4);
+            else decoder.decodeVarint();
+          }
+        }
+      } catch (fieldError) {
+        break;
+      }
+    }
+
+    if (!device_id) {
+      throw new FirmwareConnectionError('Ping missing required device_id', undefined, {
+        offset: decoder.getOffset()
+      });
+    }
+
+    return {
+      device_id,
+      lat,
+      lon,
+      alt,
+      speed_mps,
+      heading,
+      hdop,
+      sats,
+      temp_c,
+      accel_x,
+      accel_y,
+      accel_z,
+      gyro_x,
+      gyro_y,
+      gyro_z,
+      timestamp,
+    };
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new FirmwareConnectionError(
+      `Failed to decode Ping message: ${err.message}`,
+      undefined,
+      {
+        dataLength: data.length,
+        error: err.message,
+      }
+    );
+  }
+}
+
+export interface PingData {
+  device_id: string;
+  lat: number;
+  lon: number;
+  alt: number;
+  speed_mps: number;
+  heading: number;
+  hdop: number;
+  sats: number;
+  temp_c: number;
+  accel_x: number;
+  accel_y: number;
+  accel_z: number;
+  gyro_x: number;
+  gyro_y: number;
+  gyro_z: number;
+  timestamp: number;
 }
 
 /**

@@ -39,11 +39,13 @@ interface ConnectionState {
 
 type LiveTrackerProps = {
   deviceId?: string;
+  activeSessionId?: string;
   onTelemetryAction?: (data: TelemetryData) => void;
   maxHistoryLength?: number;
 };
 
 export default function LiveTracker({
+  activeSessionId,
   onTelemetryAction,
   maxHistoryLength = 40,
 }: LiveTrackerProps) {
@@ -418,7 +420,7 @@ export default function LiveTracker({
 			}
 			socketRef.current = null;
 		};
-	}, [connectedDevice?.deviceId]);
+	}, [connectedDevice?.deviceId, activeSessionId]);
 
 	if (!connectedDevice) {
 		return (
