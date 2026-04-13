@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"time"
 
+	"project2/disc-tracking-software/pb"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"project2/disc-tracking-software/pb"
 )
 
 // Session API Handlers
@@ -51,18 +52,19 @@ func CreateSession(db *sql.DB) gin.HandlerFunc {
 		`, sessionID, userID, req.DeviceId, "active", now, req.Notes)
 
 		if err != nil {
+			log.Printf("[CreateSession] Database insert failed: %v", err)
 			sendProtobufError(c, http.StatusInternalServerError, "Failed to create session")
 			return
 		}
 
 		resp := &pb.SessionResponse{
-			Id:        sessionID,
-			UserId:    userID,
-			DeviceId:  req.DeviceId,
-			Status:    "active",
-			StartedAt: timestamppb.New(now),
+			Id:         sessionID,
+			UserId:     userID,
+			DeviceId:   req.DeviceId,
+			Status:     "active",
+			StartedAt:  timestamppb.New(now),
 			ThrowCount: 0,
-			CreatedAt: timestamppb.New(now),
+			CreatedAt:  timestamppb.New(now),
 		}
 
 		sendProtobufResponse(c, http.StatusCreated, resp)
@@ -116,6 +118,7 @@ func GetActiveSessions(db *sql.DB) gin.HandlerFunc {
 		`, userID)
 
 		if err != nil {
+			log.Printf("[GetActiveSessions] Database query failed: %v", err)
 			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch sessions")
 			return
 		}
@@ -138,13 +141,13 @@ func GetActiveSessions(db *sql.DB) gin.HandlerFunc {
 			}
 
 			session := &pb.SessionResponse{
-				Id:        id,
-				UserId:    userId,
-				DeviceId:  deviceId,
-				Status:    status,
-				StartedAt: timestamppb.New(startedAt),
+				Id:         id,
+				UserId:     userId,
+				DeviceId:   deviceId,
+				Status:     status,
+				StartedAt:  timestamppb.New(startedAt),
 				ThrowCount: int32(throwCount),
-				CreatedAt: timestamppb.New(createdAt),
+				CreatedAt:  timestamppb.New(createdAt),
 			}
 
 			if endedAt != nil {
@@ -180,6 +183,7 @@ func GetUserDiscs(db *sql.DB) gin.HandlerFunc {
 		`, userID)
 
 		if err != nil {
+			log.Printf("[GetUserDiscs] Database query failed: %v", err)
 			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch discs")
 			return
 		}

@@ -216,6 +216,7 @@ func main() {
 	go dbWorker(db, hub, ping_queue)
 
 	r := gin.Default()
+	r.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
 
 	// CORS middleware for local frontend development with an explicit allow list
 	r.Use(func(c *gin.Context) {

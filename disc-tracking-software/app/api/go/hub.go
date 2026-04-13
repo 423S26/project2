@@ -15,7 +15,9 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 
 	CheckOrigin: func(r *http.Request) bool {
-		return true //in prod must restrict to our domain name
+		// Allow connections from localhost for development
+		origin := r.Header.Get("Origin")
+		return origin == "http://localhost:3000" || origin == "http://127.0.0.1:3000"
 	},
 }
 

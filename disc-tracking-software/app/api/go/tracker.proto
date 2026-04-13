@@ -35,3 +35,16 @@ message Ping {
 message SyncBatch {
   repeated Ping pings = 1;
 }
+
+message ThrowStatus {
+  string device_id = 1;
+  string status = 2;
+}
+
+message TelemetryUpdate {
+  string device_id = 1;
+  double lat = 2;
+  double lon = 3;
+  double rpm = 4;
+  double wobble = 5;
+}
