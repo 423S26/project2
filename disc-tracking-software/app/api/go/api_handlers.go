@@ -45,13 +45,10 @@ func CreateSession(db *sql.DB) gin.HandlerFunc {
 		sessionID := uuid.New().String()
 		now := time.Now()
 
-		err = db.QueryRow(`
+		_, err = db.Exec(`
 			INSERT INTO sessions (id, user_id, device_id, status, started_at, notes)
 			VALUES ($1, $2, $3, $4, $5, $6)
-			RETURNING id, user_id, device_id, status, started_at, throw_count, created_at
-		`, sessionID, userID, req.DeviceId, "active", now, req.Notes).Scan(
-			&sessionID, &userID, &req.DeviceId,
-		)
+		`, sessionID, userID, req.DeviceId, "active", now, req.Notes)
 
 		if err != nil {
 			sendProtobufError(c, http.StatusInternalServerError, "Failed to create session")
@@ -258,13 +255,10 @@ func CreateDisc(db *sql.DB) gin.HandlerFunc {
 		discID := uuid.New().String()
 		now := time.Now()
 
-		err = db.QueryRow(`
+		_, err = db.Exec(`
 			INSERT INTO disc_table (id, user_id, name, type, weight, color, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			RETURNING id, user_id, name, type, weight, color, created_at
-		`, discID, userID, req.Name, req.Type, req.Weight, req.Color, now).Scan(
-			&discID, &userID, &req.Name, &req.Type, &req.Weight, &req.Color,
-		)
+		`, discID, userID, req.Name, req.Type, req.Weight, req.Color, now)
 
 		if err != nil {
 			sendProtobufError(c, http.StatusInternalServerError, "Failed to create disc")

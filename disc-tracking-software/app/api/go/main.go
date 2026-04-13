@@ -11,9 +11,10 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"project2/disc-tracking-software/pb"
 	"sync"
 	"time"
-	"project2/disc-tracking-software/pb"
+
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 	"google.golang.org/protobuf/proto"
@@ -97,7 +98,6 @@ func finalizeThrow(session *ThrowSession) {
 	log.Printf("Finalized throw: start=%v end=%v maxRPM=%.2f", session.StartPos, session.EndPos, session.MaxRPM)
 }
 
-
 func broadcastStatus(hub *Hub, deviceId string, status string) {
 	update := &pb.ThrowStatus{
 		DeviceId: deviceId,
@@ -110,7 +110,6 @@ func broadcastStatus(hub *Hub, deviceId string, status string) {
 }
 
 //------------------------------------------
-
 
 func ValidatePing(p *pb.Ping) bool {
 	// HDOP < 2.0 is excellent, > 5.0 is junk.
@@ -218,6 +217,29 @@ func main() {
 
 	r := gin.Default()
 
+	// CORS middleware for local frontend development with an explicit allow list
+	r.Use(func(c *gin.Context) {
+		allowedOrigins := map[string]bool{
+			"http://localhost:3000": true,
+			"http://127.0.0.1:3000": true,
+		}
+
+		origin := c.GetHeader("Origin")
+		if origin != "" && allowedOrigins[origin] {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Content-Type, X-User-ID, Authorization")
+			c.Header("Access-Control-Allow-Credentials", "true")
+		}
+
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusOK)
+			return
+		}
+		c.Next()
+	})
+
 	// Protobuf Content-Type Middleware
 	r.Use(func(c *gin.Context) {
 		if c.GetHeader("Content-Type") == "application/protobuf" {
@@ -307,7 +329,7 @@ func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 		accelMS2 := resultantG * 9.80665
 
 		var rpm float64 = 0
-		
+
 		if resultantG > 0.1 { // Avoid division by zero/noise
 			omega := math.Sqrt(accelMS2 / SensorRadiusMeters)
 			rpm = (omega * 60) / (2 * math.Pi)
