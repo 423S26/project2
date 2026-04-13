@@ -1,43 +1,37 @@
-syntax  = "proto3";
-
+syntax = "proto3";
 package tracker;
-option go_package = "./pb"; //to tell compiler where to put GO instructions
+option go_package = "./pb";
 
-//object representing characteristics of what is captured in a single GPS ping from disc
 message Ping {
-  string device_id = 1;
-  double latitude = 2;
-  double longitude = 3;
-  double altitude = 4; //alt in meters
-  float hdop = 5; //horizontal Dilution of Precision
-  int32 sats = 6;  //satellite number
-  float speed = 7; //velocity of GPS/GNSS in m/s
-  double accel_x = 8; //IMU | accelerometer in x
-  double accel_y = 9; //IMU | accelerometer in x
-  double accel_z = 10; //IMU | accelerometer in z, clean release here will show as a flat z-axis, Off Axis Torque (OAT) will show high 
-  double frequency_noise = 11; //Delay to avoid fake throws/ acccidental registers
-  int64 timestamp = 12; //epoch time
-  int32 battery = 13; //millivolts
+  string device_id = 1;   // Now injected automatically via hardware FICR!
+  
+  // Spatial
+  double lat = 2;
+  double lon = 3;
+  double alt = 4;        
+  
+  // Velocity & Environment
+  float speed_mps = 5;    // GPS Speed over ground
+  float heading = 6;      // GPS Course over ground
+  float temp_c = 7;       // IMU internal temperature
+  
+  // Signal Quality
+  float hdop = 8;        
+  int32 sats = 9;         // Satellites in view
+  
+  // Physics: Accelerometer (G-Forces)
+  float accel_x = 10; 
+  float accel_y = 11;
+  float accel_z = 12; 
+  
+  // Physics: Gyroscope (Degrees per second)
+  float gyro_x = 13;      // Pitch (Nose Up/Down)
+  float gyro_y = 14;      // Roll (Hyzer/Anhyzer)
+  float gyro_z = 15;      // Yaw (Spin Rate)
+  
+  int64 timestamp = 16;
 }
 
-//burst binary transfer when phone is in range
 message SyncBatch {
   repeated Ping pings = 1;
 }
-
-// Server updates about throw phase (e.g. IN_FLIGHT, LANDED)
-message ThrowStatus {
-  string device_id = 1;
-  string status = 2;
-}
-
-// Server telemetry updates after processing
-message TelemetryUpdate {
-  string device_id = 1;
-  double lat = 2;
-  double lon = 3;
-  double rpm = 4;
-  double wobble = 5;
-}
-
-

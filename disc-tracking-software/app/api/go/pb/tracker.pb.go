@@ -25,18 +25,21 @@ const (
 type Ping struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId       string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	Latitude       float64                `protobuf:"fixed64,2,opt,name=latitude,proto3" json:"latitude,omitempty"`
-	Longitude      float64                `protobuf:"fixed64,3,opt,name=longitude,proto3" json:"longitude,omitempty"`
-	Altitude       float64                `protobuf:"fixed64,4,opt,name=altitude,proto3" json:"altitude,omitempty"`                                    //alt in meters
-	Hdop           float32                `protobuf:"fixed32,5,opt,name=hdop,proto3" json:"hdop,omitempty"`                                            //horizontal Dilution of Precision
-	Sats           int32                  `protobuf:"varint,6,opt,name=sats,proto3" json:"sats,omitempty"`                                             //satellite number
-	Speed          float32                `protobuf:"fixed32,7,opt,name=speed,proto3" json:"speed,omitempty"`                                          //velocity of GPS/GNSS in m/s
-	AccelX         float64                `protobuf:"fixed64,8,opt,name=accel_x,json=accelX,proto3" json:"accel_x,omitempty"`                          //IMU | accelerometer in x
-	AccelY         float64                `protobuf:"fixed64,9,opt,name=accel_y,json=accelY,proto3" json:"accel_y,omitempty"`                          //IMU | accelerometer in x
-	AccelZ         float64                `protobuf:"fixed64,10,opt,name=accel_z,json=accelZ,proto3" json:"accel_z,omitempty"`                         //IMU | accelerometer in z, clean release here will show as a flat z-axis, Off Axis Torque (OAT) will show high
-	FrequencyNoise float64                `protobuf:"fixed64,11,opt,name=frequency_noise,json=frequencyNoise,proto3" json:"frequency_noise,omitempty"` //Delay to avoid fake throws/ acccidental registers
-	Timestamp      int64                  `protobuf:"varint,12,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                  //epoch time
-	Battery        int32                  `protobuf:"varint,13,opt,name=battery,proto3" json:"battery,omitempty"`                                      //millivolts
+	Lat            float64                `protobuf:"fixed64,2,opt,name=lat,proto3" json:"lat,omitempty"`
+	Lon            float64                `protobuf:"fixed64,3,opt,name=lon,proto3" json:"lon,omitempty"`
+	Alt            float64                `protobuf:"fixed64,4,opt,name=alt,proto3" json:"alt,omitempty"`                                    //alt in meters
+	SpeedMps       float32                `protobuf:"fixed32,5,opt,name=speed_mps,json=speedMps,proto3" json:"speed_mps,omitempty"`               //GPS speed over ground in m/s
+	Heading        float32                `protobuf:"fixed32,6,opt,name=heading,proto3" json:"heading,omitempty"`
+	TempC          float32                `protobuf:"fixed32,7,opt,name=temp_c,json=tempC,proto3" json:"temp_c,omitempty"`
+	Hdop           float32                `protobuf:"fixed32,8,opt,name=hdop,proto3" json:"hdop,omitempty"`                                            //horizontal Dilution of Precision
+	Sats           int32                  `protobuf:"varint,9,opt,name=sats,proto3" json:"sats,omitempty"`                                             //satellite number
+	AccelX         float32                `protobuf:"fixed32,10,opt,name=accel_x,json=accelX,proto3" json:"accel_x,omitempty"`                         //IMU | accelerometer in x
+	AccelY         float32                `protobuf:"fixed32,11,opt,name=accel_y,json=accelY,proto3" json:"accel_y,omitempty"`                         //IMU | accelerometer in y
+	AccelZ         float32                `protobuf:"fixed32,12,opt,name=accel_z,json=accelZ,proto3" json:"accel_z,omitempty"`                         //IMU | accelerometer in z
+	GyroX          float32                `protobuf:"fixed32,13,opt,name=gyro_x,json=gyroX,proto3" json:"gyro_x,omitempty"`
+	GyroY          float32                `protobuf:"fixed32,14,opt,name=gyro_y,json=gyroY,proto3" json:"gyro_y,omitempty"`
+	GyroZ          float32                `protobuf:"fixed32,15,opt,name=gyro_z,json=gyroZ,proto3" json:"gyro_z,omitempty"`
+	Timestamp      int64                  `protobuf:"varint,16,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                  //epoch time
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -78,23 +81,44 @@ func (x *Ping) GetDeviceId() string {
 	return ""
 }
 
-func (x *Ping) GetLatitude() float64 {
+func (x *Ping) GetLat() float64 {
 	if x != nil {
-		return x.Latitude
+		return x.Lat
 	}
 	return 0
 }
 
-func (x *Ping) GetLongitude() float64 {
+func (x *Ping) GetLon() float64 {
 	if x != nil {
-		return x.Longitude
+		return x.Lon
 	}
 	return 0
 }
 
-func (x *Ping) GetAltitude() float64 {
+func (x *Ping) GetAlt() float64 {
 	if x != nil {
-		return x.Altitude
+		return x.Alt
+	}
+	return 0
+}
+
+func (x *Ping) GetSpeedMps() float32 {
+	if x != nil {
+		return x.SpeedMps
+	}
+	return 0
+}
+
+func (x *Ping) GetHeading() float32 {
+	if x != nil {
+		return x.Heading
+	}
+	return 0
+}
+
+func (x *Ping) GetTempC() float32 {
+	if x != nil {
+		return x.TempC
 	}
 	return 0
 }
@@ -113,37 +137,44 @@ func (x *Ping) GetSats() int32 {
 	return 0
 }
 
-func (x *Ping) GetSpeed() float32 {
-	if x != nil {
-		return x.Speed
-	}
-	return 0
-}
-
-func (x *Ping) GetAccelX() float64 {
+func (x *Ping) GetAccelX() float32 {
 	if x != nil {
 		return x.AccelX
 	}
 	return 0
 }
 
-func (x *Ping) GetAccelY() float64 {
+func (x *Ping) GetAccelY() float32 {
 	if x != nil {
 		return x.AccelY
 	}
 	return 0
 }
 
-func (x *Ping) GetAccelZ() float64 {
+func (x *Ping) GetAccelZ() float32 {
 	if x != nil {
 		return x.AccelZ
 	}
 	return 0
 }
 
-func (x *Ping) GetFrequencyNoise() float64 {
+func (x *Ping) GetGyroX() float32 {
 	if x != nil {
-		return x.FrequencyNoise
+		return x.GyroX
+	}
+	return 0
+}
+
+func (x *Ping) GetGyroY() float32 {
+	if x != nil {
+		return x.GyroY
+	}
+	return 0
+}
+
+func (x *Ping) GetGyroZ() float32 {
+	if x != nil {
+		return x.GyroZ
 	}
 	return 0
 }
@@ -155,10 +186,39 @@ func (x *Ping) GetTimestamp() int64 {
 	return 0
 }
 
-func (x *Ping) GetBattery() int32 {
+func (x *Ping) GetLatitude() float64 {
 	if x != nil {
-		return x.Battery
+		return x.Lat
 	}
+	return 0
+}
+
+func (x *Ping) GetLongitude() float64 {
+	if x != nil {
+		return x.Lon
+	}
+	return 0
+}
+
+func (x *Ping) GetAltitude() float64 {
+	if x != nil {
+		return x.Alt
+	}
+	return 0
+}
+
+func (x *Ping) GetSpeed() float32 {
+	if x != nil {
+		return x.SpeedMps
+	}
+	return 0
+}
+
+func (x *Ping) GetFrequencyNoise() float64 {
+	return 0
+}
+
+func (x *Ping) GetBattery() int32 {
 	return 0
 }
 

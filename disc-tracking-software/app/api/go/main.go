@@ -129,9 +129,9 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		ST_MakePoint($1, $2), 
 		ST_MakePoint($3, $4)
 	)`
-	db.QueryRow(query, teeLon, teeLat, p.Longitude, p.Latitude).Scan(&surfaceDist)
+	db.QueryRow(query, teeLon, teeLat, p.Lon, p.Lat).Scan(&surfaceDist)
 
-	verticalDist := p.Altitude - teeAlt
+	verticalDist := p.Alt - teeAlt
 	totalDist := math.Sqrt(math.Pow(surfaceDist, 2) + math.Pow(verticalDist, 2))
 
 	// OB (Out of Bounds) Check via Geofencing
@@ -140,7 +140,7 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		SELECT 1 FROM course_obstacles 
 		WHERE ST_Intersects(boundary, ST_SetSRID(ST_MakePoint($1, $2), 4326))
 	)`
-	db.QueryRow(obQuery, p.Longitude, p.Latitude).Scan(&isOB)
+	db.QueryRow(obQuery, p.Lon, p.Lat).Scan(&isOB)
 
 	return totalDist, isOB
 }
@@ -149,7 +149,7 @@ func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
 	timeDelta := float64(p2.Timestamp-p1.Timestamp) / 1000.0 // seconds
 
 	// Distance between two points
-	dist := Haversine(p1.Latitude, p1.Longitude, p2.Latitude, p2.Longitude)
+	dist := Haversine(p1.Lat, p1.Lon, p2.Lat, p2.Lon)
 
 	return dist / timeDelta
 }
@@ -341,15 +341,15 @@ func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
 		_, err := db.Exec(`
 			INSERT INTO throws (device_id, location, hdop, rpm, wobble_g)
 			VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7)`,
-			ping.DeviceId, ping.Longitude, ping.Latitude, ping.Altitude, ping.Hdop, rpm, wobble,
+			ping.DeviceId, ping.Lon, ping.Lat, ping.Alt, ping.Hdop, rpm, wobble,
 		)
 
 		if err == nil {
 			// Broadcast the calculated data to Next.js via WebSocket
 			update := &pb.TelemetryUpdate{
 				DeviceId: ping.DeviceId,
-				Lat:      float64(ping.Latitude),
-				Lon:      float64(ping.Longitude),
+				Lat:      float64(ping.Lat),
+				Lon:      float64(ping.Lon),
 				Rpm:      math.Round(rpm),
 				Wobble:   wobble,
 			}
