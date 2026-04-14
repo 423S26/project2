@@ -161,16 +161,17 @@ export class BLEManager {
       const batchBytes = encodeMessage(batch);
       const requestBody = batchBytes.buffer.slice(batchBytes.byteOffset, batchBytes.byteOffset + batchBytes.byteLength) as ArrayBuffer;
 
-      const response = await fetch('http://localhost:8080/api/v1/sync', {
+      const response = await fetch('http://localhost:8080/api/v1/telemetry', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/protobuf',
+          'X-User-ID': 'test-user', // TODO: Use actual user ID from auth
         },
         body: requestBody,
       });
 
       if (!response.ok) {
-        throw new Error(`Sync failed: ${response.status}`);
+        throw new Error(`Telemetry sync failed: ${response.status}`);
       }
 
       this.pingBuffer = []; // Clear buffer on success

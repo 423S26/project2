@@ -3,6 +3,7 @@ syntax = "proto3";
 package disctracking;
 
 import "google/protobuf/timestamp.proto";
+import "hardware.proto";
 
 option go_package = "project2/disc-tracking-software/pb";
 
@@ -125,19 +126,29 @@ message UserResponse {
   google.protobuf.Timestamp created_at = 4;
 }
 
-// ============ ERROR RESPONSE ============
+// ============ TELEMETRY MESSAGES ============
 
-message ErrorResponse {
-  string error = 1;
-  int32 code = 2;
+message TelemetryUpdate {
+  string device_id = 1;
+  double lat = 2;
+  double lon = 3;
+  optional double alt = 4;
+  double rpm = 5;
+  double wobble = 6;
+  int64 timestamp = 7;
 }
 
-// ============ GENERIC RESPONSE WRAPPERS ============
+message GetTelemetryResponse {
+  repeated TelemetryUpdate telemetry = 1;
+}
 
-message GenericMessage {
+message TelemetryResponse {
   string message = 1;
+  int32 processed_count = 2;
 }
 
-message GenericId {
-  string id = 1;
+// ============ SYNC BATCH (for telemetry submission) ============
+
+message SyncBatch {
+  repeated Ping pings = 1;
 }

@@ -32,9 +32,8 @@ interface TelemetryData {
 interface ConnectionState {
 	connected: boolean;
 	healthy: boolean;
-	reconnectAttempt: number;
 	lastError?: string;
-	lastHeartbeat?: Date;
+	lastFetch?: Date;
 }
 
 type LiveTrackerProps = {
@@ -55,18 +54,11 @@ export default function LiveTracker({
 	const [connectionState, setConnectionState] = useState<ConnectionState>({
 		connected: false,
 		healthy: false,
-		reconnectAttempt: 0,
 	});
 
-	const MAX_RECONNECT_ATTEMPTS = 5;
-	const INITIAL_RECONNECT_DELAY = 1000;
-	const MAX_RECONNECT_DELAY = 30000;
-	const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/ws';
-	const deviceWsUrl = connectedDevice?.deviceId
-		? `${WS_URL}?device_id=${encodeURIComponent(connectedDevice.deviceId)}&t=${Date.now()}`
-		: null;
-	const WS_TIMEOUT = 30000; // 30 seconds
-	const socketRef = useRef<WebSocket | null>(null);
+	const POLL_INTERVAL = 1000; // Poll every 1 second
+	const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 	const lastToastRef = useRef<{ message: string; at: number }>({ message: '', at: 0 });
 	const hasShownConnectedToastRef = useRef(false);
 
@@ -85,340 +77,199 @@ export default function LiveTracker({
 		}
 	};
 
-	const getHardwareFailureMessage = (): string =>
-		'Hardware connection unsuccessful. Please check if device is on or in range.';
+	const fetchTelemetry = async () => {
+		if (!connectedDevice?.deviceId) return;
 
-	const toUserMessage = (error: Error): string => {
-		const raw = error.message;
-		if (raw.includes('required device_id')) {
-			return 'Telemetry data format mismatch detected. Check backend payload schema.';
-		}
-		if (raw.includes('ArrayBuffer')) {
-			return 'Unsupported telemetry frame received from backend.';
-		}
-		if (raw.toLowerCase().includes('timeout')) {
-			return getHardwareFailureMessage();
-		}
-		if (raw.toLowerCase().includes('max reconnection attempts')) {
-			return getHardwareFailureMessage();
-		}
-		return 'Telemetry stream error detected. Retrying connection...';
-	};
-
-	const decodeTelemetryUpdate = (data: Uint8Array): TelemetryData => {
 		try {
-			const decoder = new ProtoDecoder(data);
-			
-			// Decode TelemetryUpdate fields from app/api/go/tracker.proto
-			let deviceId = '';
-			let lat = 0;
-			let lon = 0;
-			let rpm = 0;
-			let wobble = 0;
+			const response = await fetch(`${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(connectedDevice.deviceId)}`, {
+				headers: {
+					'Content-Type': 'application/protobuf',
+					'X-User-ID': 'test-user', // TODO: Use actual user ID from auth
+				},
+			});
 
-			while (decoder.getOffset() < data.length) {
-				try {
-					const tag = decoder.decodeVarint();
-					const wireType = tag & 0x07;
-					const fieldNumber = tag >>> 3;
-
-					if (fieldNumber === 1) {
-						deviceId = decoder.decodeString();
-					} else if (fieldNumber === 2) {
-						lat = decoder.decodeDouble();
-					} else if (fieldNumber === 3) {
-						lon = decoder.decodeDouble();
-					} else if (fieldNumber === 4) {
-						rpm = decoder.decodeDouble();
-					} else if (fieldNumber === 5) {
-						wobble = decoder.decodeDouble();
-					} else {
-						// Unknown field - skip it
-						if (wireType === 2) {
-							const length = decoder.decodeVarint();
-							decoder.readBytes(length);
-						} else if (wireType === 0 || wireType === 1 || wireType === 5) {
-							if (wireType === 1) decoder.readBytes(8);
-							else if (wireType === 5) decoder.readBytes(4);
-							else decoder.decodeVarint();
-						}
-					}
-				} catch (fieldError) {
-					// Skip unknown fields silently to avoid console spam
-					break;
-				}
+			if (!response.ok) {
+				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 			}
 
-			// Validate required fields
-			if (!deviceId) {
-				throw new FirmwareConnectionError(
-					'TelemetryUpdate missing required device_id',
-					undefined,
-					{offset: decoder.getOffset()}
-				);
-			}
+			const buffer = await response.arrayBuffer();
+			const data = new Uint8Array(buffer);
 
-			return {
-				device_id: deviceId,
-				lat,
-				lon,
-				rpm,
-				wobble,
-				received_at: Date.now(),
-			};
-		} catch (error) {
-			const err = error instanceof Error ? error : new Error(String(error));
-			throw new FirmwareConnectionError(
-				`Failed to decode TelemetryUpdate message: ${err.message}`,
-				undefined,
-				{
-					dataLength: data.length,
-					error: err.message,
-				}
-			);
-		}
-	};
+			// Decode the GetTelemetryResponse protobuf
+			const telemetryUpdates = decodeTelemetryResponse(data);
 
-	const createWebSocketConnection = async (attemptNumber: number = 0): Promise<WebSocket | null> => {
-		try {
-			const wsUrl = deviceWsUrl;
-			// Validate connection parameters
-			if (!wsUrl || wsUrl.length === 0) {
-				throw new FirmwareConnectionError('WebSocket URL is not configured', undefined, {
-					url: wsUrl,
+			if (telemetryUpdates.length > 0) {
+				// Use the most recent telemetry update
+				const latestUpdate = telemetryUpdates[telemetryUpdates.length - 1];
+				const telemetryData: TelemetryData = {
+					device_id: latestUpdate.deviceId,
+					lat: latestUpdate.lat,
+					lon: latestUpdate.lon,
+					rpm: latestUpdate.rpm,
+					wobble: latestUpdate.wobble,
+					received_at: latestUpdate.timestamp,
+				};
+
+				setLastPing(telemetryData);
+				setHistory((prev) => {
+					const next = [...prev, telemetryData];
+					return next.slice(-maxHistoryLength);
 				});
-			}
+				onTelemetryAction?.(telemetryData);
 
-			if (attemptNumber > MAX_RECONNECT_ATTEMPTS) {
-				throw new FirmwareConnectionError(
-					`Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) exceeded`,
-					undefined,
-					{attemptNumber, maxAttempts: MAX_RECONNECT_ATTEMPTS}
-				);
-			}
-
-			// Initialize connection monitor for this connection
-			const connectionMonitor = new ConnectionMonitor();
-
-			const socket = new WebSocket(wsUrl);
-			
-			// Set to receive binary messages (protobuf)
-			socket.binaryType = 'arraybuffer';
-
-			// Set connection timeout
-			const connectionTimeout = setTimeout(() => {
-				if (socket.readyState !== WebSocket.OPEN) {
-					const timeoutError = new FirmwareConnectionError(
-						`WebSocket connection timeout after ${WS_TIMEOUT}ms`,
-						undefined,
-						{timeout: WS_TIMEOUT, url: wsUrl}
-					);
-					socket.close(4001, 'Connection timeout');
-					setConnectionState(prev => ({
-						...prev,
-						healthy: false,
-						lastError: timeoutError.message,
-					}));
-					showToastOnce('Telemetry connection timed out. Reconnecting...');
-				}
-			}, WS_TIMEOUT);
-
-			socket.onopen = () => {
-				clearTimeout(connectionTimeout);
-				connectionMonitor.connect();
 				setConnectionState({
 					connected: true,
 					healthy: true,
-					reconnectAttempt: 0,
+					lastFetch: new Date(),
 				});
 
 				if (!hasShownConnectedToastRef.current) {
 					hasShownConnectedToastRef.current = true;
-					showToastOnce('Telemetry connection established.', 'success');
+					showToastOnce('Telemetry data received.', 'success');
 				}
-			};
-
-			socket.onmessage = (event: MessageEvent) => {
-				try {
-					// Validate message exists and is not empty
-					if (!event.data || event.data.byteLength === 0) {
-						return;
-					}
-
-					// Record heartbeat for connection monitoring
-					connectionMonitor.recordHeartbeat();
-
-					// Decode binary protobuf TelemetryUpdate message from backend
-					if (!(event.data instanceof ArrayBuffer)) {
-						throw new FirmwareConnectionError(
-							'Expected binary protobuf message (ArrayBuffer)',
-							undefined,
-							{dataType: typeof event.data}
-						);
-					}
-
-					const binaryData = new Uint8Array(event.data);
-					const data = decodeTelemetryUpdate(binaryData);
-
-					// Update connection state and UI
-					setConnectionState((prev) => ({
-						...prev,
-						connected: true,
-						healthy: true,
-						lastHeartbeat: new Date(),
-						lastError: undefined,
-					}));
-
-					setLastPing(data);
-					setHistory((prev) => {
-						const next = [...prev, data];
-						return next.slice(-maxHistoryLength);
-					});
-					onTelemetryAction?.(data);
-				} catch (error) {
-					const err = error instanceof Error ? error : new Error(String(error));
-
-					// Log error but don't disconnect - may be transient issue
-					setConnectionState((prev) => ({
-						...prev,
-						healthy: false,
-						lastError: err.message,
-					}));
-					showToastOnce(toUserMessage(err));
-				}
-			};
-
-			socket.onerror = (event: Event) => {
-				const errorMsg = `WebSocket error occurred`;
-				showToastOnce('Connection to telemetry stream dropped. Reconnecting...');
-
-				setConnectionState(prev => ({
-					...prev,
-					healthy: false,
-					lastError: errorMsg,
-				}));
-
-				connectionMonitor.disconnect();
-
-				// Attempt reconnection with exponential backoff
-				const delay = Math.min(
-					INITIAL_RECONNECT_DELAY * Math.pow(2, attemptNumber),
-					MAX_RECONNECT_DELAY
-				);
-
-				setTimeout(
-					() => createWebSocketConnection(attemptNumber + 1),
-					delay
-				);
-			};
-
-			socket.onclose = (event: CloseEvent) => {
-				setConnectionState(prev => ({
-					...prev,
-					connected: false,
-					healthy: false,
-				}));
-
-				// Attempt reconnection if not a normal closure
-				if (event.code !== 1000 && attemptNumber < MAX_RECONNECT_ATTEMPTS) {
-					const delay = Math.min(
-						INITIAL_RECONNECT_DELAY * Math.pow(2, attemptNumber),
-						MAX_RECONNECT_DELAY
-					);
-
-					showToastOnce(`Telemetry disconnected (code ${event.code}). Reconnecting...`);
-					setTimeout(
-						() => createWebSocketConnection(attemptNumber + 1),
-						delay
-					);
-				} else if (event.code !== 1000) {
-					const finalError = new FirmwareConnectionError(
-						`WebSocket closed with code ${event.code}: ${event.reason}`,
-						undefined,
-						{code: event.code, reason: event.reason, wasClean: event.wasClean}
-					);
-					logError(finalError, 'WebSocket final closure');
-					showToastOnce('Telemetry connection closed and could not recover. Refresh to retry.');
-				}
-			};
-
-			return socket;
+			} else {
+				// No telemetry data yet, but connection is healthy
+				setConnectionState({
+					connected: true,
+					healthy: true,
+					lastFetch: new Date(),
+				});
+			}
 		} catch (error) {
 			const err = error instanceof Error ? error : new Error(String(error));
-			const firmwareError = error instanceof FirmwareConnectionError
-				? error
-				: new FirmwareConnectionError(err.message, undefined, {originalError: err.message});
+			setConnectionState(prev => ({
+				...prev,
+				healthy: false,
+				lastError: err.message,
+			}));
+			showToastOnce('Failed to fetch telemetry data. Retrying...');
+		}
+	};
 
-			logError(firmwareError, 'createWebSocketConnection');
+	const decodeTelemetryResponse = (data: Uint8Array): any[] => {
+		try {
+			const decoder = new ProtoDecoder(data);
+			const telemetryUpdates: any[] = [];
 
-			// Attempt reconnection if not max attempts
-			if (attemptNumber < MAX_RECONNECT_ATTEMPTS) {
-				const delay = Math.min(
-					INITIAL_RECONNECT_DELAY * Math.pow(2, attemptNumber),
-					MAX_RECONNECT_DELAY
-				);
+			while (decoder.getOffset() < data.length) {
+				const tag = decoder.decodeVarint();
+				const wireType = tag & 0x07;
+				const fieldNumber = tag >>> 3;
 
-				setConnectionState(prev => ({
-					...prev,
-					reconnectAttempt: attemptNumber + 1,
-					lastError: err.message,
-				}));
-				showToastOnce(`Telemetry connection failed. Retrying (${attemptNumber + 1}/${MAX_RECONNECT_ATTEMPTS + 1})...`);
+				if (fieldNumber === 1 && wireType === 2) { // telemetry field (repeated)
+					const length = decoder.decodeVarint();
+					const endOffset = decoder.getOffset() + length;
 
-				setTimeout(
-					() => createWebSocketConnection(attemptNumber + 1),
-					delay
-				);
-			} else {
-				setConnectionState(prev => ({
-					...prev,
-					lastError: `Failed after ${MAX_RECONNECT_ATTEMPTS + 1} attempts`,
-				}));
-				showToastOnce(getHardwareFailureMessage());
+					while (decoder.getOffset() < endOffset) {
+						const telemetryTag = decoder.decodeVarint();
+						const telemetryWireType = telemetryTag & 0x07;
+						const telemetryFieldNumber = telemetryTag >>> 3;
+
+						let deviceId = '';
+						let lat = 0;
+						let lon = 0;
+						let alt = 0;
+						let rpm = 0;
+						let wobble = 0;
+						let timestamp = 0;
+
+						if (telemetryWireType === 2) { // nested message
+							const telemetryLength = decoder.decodeVarint();
+							const telemetryEndOffset = decoder.getOffset() + telemetryLength;
+
+							while (decoder.getOffset() < telemetryEndOffset) {
+								const innerTag = decoder.decodeVarint();
+								const innerWireType = innerTag & 0x07;
+								const innerFieldNumber = innerTag >>> 3;
+
+								if (innerFieldNumber === 1) deviceId = decoder.decodeString();
+								else if (innerFieldNumber === 2) lat = decoder.decodeDouble();
+								else if (innerFieldNumber === 3) lon = decoder.decodeDouble();
+								else if (innerFieldNumber === 4) alt = decoder.decodeDouble();
+								else if (innerFieldNumber === 5) rpm = decoder.decodeDouble();
+								else if (innerFieldNumber === 6) wobble = decoder.decodeDouble();
+								else if (innerFieldNumber === 7) timestamp = decoder.decodeVarint();
+								else {
+									// Skip unknown fields
+									if (innerWireType === 2) {
+										const skipLength = decoder.decodeVarint();
+										decoder.readBytes(skipLength);
+									} else if (innerWireType === 0) decoder.decodeVarint();
+									else if (innerWireType === 1) decoder.readBytes(8);
+									else if (innerWireType === 5) decoder.readBytes(4);
+								}
+							}
+
+							telemetryUpdates.push({
+								deviceId,
+								lat,
+								lon,
+								alt,
+								rpm,
+								wobble,
+								timestamp,
+							});
+						}
+					}
+				} else {
+					// Skip unknown fields
+					if (wireType === 2) {
+						const skipLength = decoder.decodeVarint();
+						decoder.readBytes(skipLength);
+					} else if (wireType === 0) decoder.decodeVarint();
+					else if (wireType === 1) decoder.readBytes(8);
+					else if (wireType === 5) decoder.readBytes(4);
+				}
 			}
-			return null;
+
+			return telemetryUpdates;
+		} catch (error) {
+			const err = error instanceof Error ? error : new Error(String(error));
+			throw new FirmwareConnectionError(
+				`Failed to decode GetTelemetryResponse: ${err.message}`,
+				undefined,
+				{dataLength: data.length}
+			);
 		}
 	};
 
 	useEffect(() => {
-		if (!connectedDevice?.deviceId) {
-			if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-				socketRef.current.close(1000, 'Device disconnected');
+		if (!connectedDevice?.deviceId || !activeSessionId) {
+			// Stop polling when no device or session
+			if (pollIntervalRef.current) {
+				clearInterval(pollIntervalRef.current);
+				pollIntervalRef.current = null;
 			}
 			setHistory([]);
 			setLastPing(null);
 			setConnectionState({
 				connected: false,
 				healthy: false,
-				reconnectAttempt: 0,
-				lastError: undefined,
 			});
 			hasShownConnectedToastRef.current = false;
-			socketRef.current = null;
 			return;
 		}
 
-		const initializeConnection = async () => {
-			setHistory([]);
-			setLastPing(null);
-			setConnectionState({
-				connected: false,
-				healthy: false,
-				reconnectAttempt: 0,
-				lastError: undefined,
-			});
-			hasShownConnectedToastRef.current = false;
+		// Start polling when device and session are available
+		setHistory([]);
+		setLastPing(null);
+		setConnectionState({
+			connected: false,
+			healthy: false,
+		});
+		hasShownConnectedToastRef.current = false;
 
-			socketRef.current = await createWebSocketConnection();
-		};
+		// Initial fetch
+		fetchTelemetry();
 
-		initializeConnection();
+		// Start polling
+		pollIntervalRef.current = setInterval(fetchTelemetry, POLL_INTERVAL);
 
 		return () => {
-			if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-				socketRef.current.close(1000, 'Component unmounting');
+			if (pollIntervalRef.current) {
+				clearInterval(pollIntervalRef.current);
+				pollIntervalRef.current = null;
 			}
-			socketRef.current = null;
 		};
 	}, [connectedDevice?.deviceId, activeSessionId]);
 
@@ -440,16 +291,15 @@ export default function LiveTracker({
 					}`}
 				/>
 				<span className="text-sm font-mono">
-					{connectionState.healthy ? 'Connected' : 'Disconnected'}
-					{connectionState.reconnectAttempt > 0 && ` (Attempt ${connectionState.reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS + 1})`}
+					{connectionState.healthy ? 'Active' : 'Inactive'}
 				</span>
 			</div>
 			{connectionState.lastError && (
 				<div className="text-xs text-red-300 mt-1 font-mono">{connectionState.lastError}</div>
 			)}
-			{lastPing?.received_at && (
+			{connectionState.lastFetch && (
 				<div className="text-xs text-gray-300 mt-1 font-mono">
-					Last update: {new Date(lastPing.received_at).toLocaleTimeString()}
+					Last fetch: {connectionState.lastFetch.toLocaleTimeString()}
 				</div>
 			)}
 

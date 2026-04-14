@@ -1,6 +1,6 @@
 //NOTE: UNIT TESTS ARE IN A SEPARATE FILE (main_test.go) TO AVOID IMPORT CYCLES WITH THE PROTOBUF STRUCTS
 //NOTE: ASSERTS WILL BE IMPLEMENTED INLINE
-//TODO: REMOVE JSON ENCODING/DECODING AND JUST USE PROTOBUF DATA ENCODING FOR WEBSOCKET COMMUNICATION TO FRONTEND
+//NOTE: Refactored to use HTTP POST instead of WebSocket for telemetry
 
 package main
 
@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"project2/disc-tracking-software/pb"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -39,75 +38,8 @@ type ThrowSession struct {
 }
 
 var (
-	sessionMu      sync.RWMutex
 	activeSessions = make(map[string]*ThrowSession)
 )
-
-func DetectThrowPhases(ping *pb.Ping, currentRPM float64, hub *Hub) {
-	sessionMu.Lock()
-	session, exists := activeSessions[ping.DeviceId]
-
-	// INIT DETECTION: Launch
-	// Trigger: RPM jumps from 0 to > 400 AND G-Force > 5G
-
-	if !exists && currentRPM > 400 {
-		activeSessions[ping.DeviceId] = &ThrowSession{
-			StartTime: time.Unix(ping.Timestamp/1000, 0),
-			StartPos:  ping,
-			MaxRPM:    currentRPM,
-			IsActive:  true,
-		}
-		sessionMu.Unlock()
-		broadcastStatus(hub, ping.DeviceId, "IN_FLIGHT")
-		return
-	}
-
-	if exists && session.IsActive {
-		// Update Max Stats
-		if currentRPM > session.MaxRPM {
-			session.MaxRPM = currentRPM
-		}
-
-		// FINAL DETECTION: Landing
-		// Trigger: RPM drops significantly AND Z-axis stabilizes at ~1G
-
-		if currentRPM < 100 && math.Abs(float64(ping.AccelZ)-1.0) < 0.2 {
-			session.EndPos = ping
-			session.IsActive = false
-
-			finalizeThrow(session)
-
-			delete(activeSessions, ping.DeviceId)
-
-			duration := session.EndPos.Timestamp - session.StartPos.Timestamp
-			sessionMu.Unlock()
-
-			broadcastStatus(hub, ping.DeviceId, "LANDED")
-
-			if float64(duration)/1000.0 < 1.5 {
-				return
-			}
-			return
-		}
-	}
-	sessionMu.Unlock()
-}
-
-func finalizeThrow(session *ThrowSession) {
-	// Placeholder: Implement logic to persist throw data or trigger analytics.
-	log.Printf("Finalized throw: start=%v end=%v maxRPM=%.2f", session.StartPos, session.EndPos, session.MaxRPM)
-}
-
-func broadcastStatus(hub *Hub, deviceId string, status string) {
-	update := &pb.ThrowStatus{
-		DeviceId: deviceId,
-		Status:   status,
-	}
-	payload, err := proto.Marshal(update)
-	if err == nil {
-		hub.broadcast <- payload
-	}
-}
 
 //------------------------------------------
 
@@ -115,7 +47,7 @@ func ValidatePing(p *pb.Ping) bool {
 	// HDOP < 2.0 is excellent, > 5.0 is junk.
 	// We ignore anything above 4.0 to prevent "jitter"
 
-	if p.Hdop > 4.0 || p.Sats < 5 {
+	if p.Hdop == nil || *p.Hdop > 4.0 || p.Satellites == nil || *p.Satellites < 5 {
 		return false
 	}
 	return true
@@ -129,9 +61,15 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		ST_MakePoint($1, $2), 
 		ST_MakePoint($3, $4)
 	)`
-	db.QueryRow(query, teeLon, teeLat, p.Lon, p.Lat).Scan(&surfaceDist)
+	if p.Longitude == nil || p.Latitude == nil {
+		return 0, false
+	}
+	db.QueryRow(query, teeLon, teeLat, *p.Longitude, *p.Latitude).Scan(&surfaceDist)
 
-	verticalDist := p.Alt - teeAlt
+	if p.Altitude == nil {
+		return 0, false
+	}
+	verticalDist := *p.Altitude - teeAlt
 	totalDist := math.Sqrt(math.Pow(surfaceDist, 2) + math.Pow(verticalDist, 2))
 
 	// OB (Out of Bounds) Check via Geofencing
@@ -140,7 +78,7 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		SELECT 1 FROM course_obstacles 
 		WHERE ST_Intersects(boundary, ST_SetSRID(ST_MakePoint($1, $2), 4326))
 	)`
-	db.QueryRow(obQuery, p.Lon, p.Lat).Scan(&isOB)
+	db.QueryRow(obQuery, *p.Longitude, *p.Latitude).Scan(&isOB)
 
 	return totalDist, isOB
 }
@@ -191,15 +129,129 @@ func CalculateRPM(accelX, accelY float64, radiusMeters float64) float64 {
 	return rpm
 }
 
-//----------------------------------------------------------------------
-//buffered channels to handle binary package ingestion
+// Telemetry API Handler - Process and store telemetry data via HTTP POST
+func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Read protobuf data from request body
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			sendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
+			return
+		}
 
-var ping_queue = make(chan *pb.Ping, 5000)
+		var batch pb.SyncBatch
+		if err := proto.Unmarshal(body, &batch); err != nil {
+			sendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
+			return
+		}
+
+		// Process each ping in the batch
+		processedPings := 0
+		for _, ping := range batch.GetPings() {
+			if err := processSinglePing(db, ping); err != nil {
+				log.Printf("[ProcessTelemetry] Failed to process ping for device %s: %v", ping.DeviceId, err)
+				continue
+			}
+			processedPings++
+		}
+
+		resp := &pb.TelemetryResponse{
+			Message:        "Telemetry processed",
+			ProcessedCount: int32(processedPings),
+		}
+
+		sendProtobufResponse(c, http.StatusOK, resp)
+	}
+}
+
+// Process a single ping and store telemetry data
+func processSinglePing(db *sql.DB, ping *pb.Ping) error {
+	// Validate ping data
+	if !ValidatePing(ping) {
+		return nil // Skip invalid pings silently
+	}
+
+	// Calculate RPM from Centripetal Acceleration
+	resultantG := math.Sqrt(math.Pow(float64(ping.AccelX), 2) + math.Pow(float64(ping.AccelY), 2))
+	accelMS2 := resultantG * 9.80665
+
+	var rpm float64 = 0
+	if resultantG > 0.1 { // Avoid division by zero/noise
+		omega := math.Sqrt(accelMS2 / SensorRadiusMeters)
+		rpm = (omega * 60) / (2 * math.Pi)
+	}
+
+	wobble := math.Abs(float64(ping.AccelZ))
+
+	// Persist to PostGIS
+	_, err := db.Exec(`
+		INSERT INTO throws (device_id, location, hdop, rpm, wobble_g, timestamp)
+		VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7, $8)`,
+		ping.DeviceId, ping.Lon, ping.Lat, ping.Alt, ping.Hdop, rpm, wobble,
+		time.Unix(ping.Timestamp/1000, 0),
+	)
+
+	return err
+}
+
+// Get Telemetry Data - Retrieve recent telemetry for a device
+func GetTelemetry(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		deviceId := c.Query("device_id")
+		if deviceId == "" {
+			sendProtobufError(c, http.StatusBadRequest, "device_id parameter required")
+			return
+		}
+
+		// Get recent telemetry data (last 100 points)
+		rows, err := db.Query(`
+			SELECT device_id, ST_X(location), ST_Y(location), ST_Z(location),
+				   hdop, rpm, wobble_g, timestamp
+			FROM throws
+			WHERE device_id = $1
+			ORDER BY timestamp DESC
+			LIMIT 100`, deviceId)
+
+		if err != nil {
+			log.Printf("[GetTelemetry] Database query failed: %v", err)
+			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch telemetry")
+			return
+		}
+		defer rows.Close()
+
+		var telemetry []*pb.TelemetryUpdate
+		for rows.Next() {
+			var deviceId string
+			var lon, lat, alt, hdop, rpm, wobble float64
+			var timestamp time.Time
+
+			err := rows.Scan(&deviceId, &lon, &lat, &alt, &hdop, &rpm, &wobble, &timestamp)
+			if err != nil {
+				log.Printf("[GetTelemetry] Row scan error: %v", err)
+				continue
+			}
+
+			update := &pb.TelemetryUpdate{
+				DeviceId:  deviceId,
+				Lat:       lat,
+				Lon:       lon,
+				Alt:       alt,
+				Rpm:       rpm,
+				Wobble:    wobble,
+				Timestamp: timestamp.Unix() * 1000, // Convert to milliseconds
+			}
+			telemetry = append(telemetry, update)
+		}
+
+		resp := &pb.GetTelemetryResponse{
+			Telemetry: telemetry,
+		}
+
+		sendProtobufResponse(c, http.StatusOK, resp)
+	}
+}
 
 func main() {
-	hub := NewHub()
-	go hub.Run()
-
 	dbUrl := os.Getenv("DATABASE_URL")
 	if dbUrl == "" {
 		log.Println("DATABASE_URL not set, DB features might fail if they require it")
@@ -211,9 +263,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Start DB worker correctly
-	go dbWorker(db, hub, ping_queue)
 
 	r := gin.Default()
 	r.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
@@ -249,37 +298,6 @@ func main() {
 		c.Next()
 	})
 
-	r.GET("/ws", func(c *gin.Context) {
-		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		hub.register <- conn
-	})
-
-	r.POST("/api/v1/sync", func(c *gin.Context) {
-		body, err := io.ReadAll(c.Request.Body)
-
-		if err != nil { //read raw binary stream
-			c.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-
-		//throw binaries into our buf boy (Protobuf) struct
-		var batch pb.SyncBatch
-		if err := proto.Unmarshal(body, &batch); err != nil {
-			c.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-
-		for _, ping := range batch.GetPings() { //send ping in background queue
-			ping_queue <- ping
-		}
-
-		c.Status(http.StatusOK)
-	})
-
 	// Auth middleware mock - In production, integrate with your actual auth system
 	authMiddleware := func(c *gin.Context) {
 		// Extract user ID from JWT or session - for now using a default for testing
@@ -311,6 +329,10 @@ func main() {
 		// User settings
 		api.GET("/user/settings", GetUserSettings(db))
 		api.PATCH("/user/settings", UpdateUserSettings(db))
+
+		// Telemetry endpoints
+		api.POST("/telemetry", ProcessTelemetry(db))
+		api.GET("/telemetry", GetTelemetry(db))
 	}
 
 	log.Println("Server running on :8080")
@@ -321,45 +343,3 @@ func main() {
 // FOR REFERENCE: If the chip is 10mm from the center, this is shown as 0.01
 
 const SensorRadiusMeters = 0.008 // Example: 8mm
-
-func dbWorker(db *sql.DB, hub *Hub, queue chan *pb.Ping) {
-	for ping := range queue {
-		// Calculate RPM from Centripetal Acceleration
-
-		resultantG := math.Sqrt(math.Pow(float64(ping.AccelX), 2) + math.Pow(float64(ping.AccelY), 2))
-		accelMS2 := resultantG * 9.80665
-
-		var rpm float64 = 0
-
-		if resultantG > 0.1 { // Avoid division by zero/noise
-			omega := math.Sqrt(accelMS2 / SensorRadiusMeters)
-			rpm = (omega * 60) / (2 * math.Pi)
-		}
-
-		wobble := math.Abs(float64(ping.AccelZ))
-
-		// Persist to PostGIS
-		_, err := db.Exec(`
-			INSERT INTO throws (device_id, location, hdop, rpm, wobble_g)
-			VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7)`,
-			ping.DeviceId, ping.Lon, ping.Lat, ping.Alt, ping.Hdop, rpm, wobble,
-		)
-
-		if err == nil {
-			// Broadcast the calculated data to Next.js via WebSocket
-			update := &pb.TelemetryUpdate{
-				DeviceId: ping.DeviceId,
-				Lat:      float64(ping.Lat),
-				Lon:      float64(ping.Lon),
-				Rpm:      math.Round(rpm),
-				Wobble:   wobble,
-			}
-			payload, err := proto.Marshal(update)
-			if err == nil {
-				hub.broadcast <- payload
-			}
-		} else {
-			log.Printf("DB Insert Error: %v\n", err)
-		}
-	}
-}
