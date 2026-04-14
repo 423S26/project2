@@ -375,6 +375,143 @@ func SaveThrow(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
+func ListThrows(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.GetString("userID")
+		if userID == "" {
+			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		sessionID := c.Query("sessionId")
+
+		baseQuery := `
+			SELECT
+				t.id,
+				COALESCE(t.session_id::text, ''),
+				COALESCE(s.notes, ''),
+				COALESCE(d.name, 'Unknown Disc'),
+				COALESCE(d.type, 'Unknown Type'),
+				COALESCE(t.distance, 0),
+				COALESCE(t.flight_time, 0),
+				COALESCE(t.exit_velocity, 0),
+				t.timestamp
+			FROM throws t
+			LEFT JOIN disc_table d ON d.id = t.disc_id
+			LEFT JOIN sessions s ON s.id = t.session_id
+			WHERE t.user_id = $1
+		`
+
+		var (
+			rows *sql.Rows
+			err  error
+		)
+
+		if sessionID != "" {
+			rows, err = db.Query(baseQuery+" AND t.session_id = $2 ORDER BY t.timestamp DESC", userID, sessionID)
+		} else {
+			rows, err = db.Query(baseQuery+" ORDER BY t.timestamp DESC", userID)
+		}
+
+		if err != nil {
+			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch throws")
+			return
+		}
+		defer rows.Close()
+
+		throws := make([]*pb.ThrowListItem, 0)
+		for rows.Next() {
+			var (
+				id           string
+				sessionID    string
+				session      string
+				discName     string
+				discType     string
+				distance     float64
+				flightTime   float64
+				exitVelocity float64
+				timestamp    time.Time
+			)
+
+			if err := rows.Scan(
+				&id,
+				&sessionID,
+				&session,
+				&discName,
+				&discType,
+				&distance,
+				&flightTime,
+				&exitVelocity,
+				&timestamp,
+			); err != nil {
+				sendProtobufError(c, http.StatusInternalServerError, "Failed to read throw rows")
+				return
+			}
+
+			if session == "" {
+				session = "Session " + sessionID
+			}
+
+			throws = append(throws, &pb.ThrowListItem{
+				Id:           id,
+				SessionId:    sessionID,
+				SessionLabel: session,
+				DiscName:     discName,
+				DiscType:     discType,
+				Distance:     distance,
+				FlightTime:   flightTime,
+				ExitVelocity: exitVelocity,
+				Timestamp:    timestamppb.New(timestamp.UTC()),
+			})
+		}
+
+		if err := rows.Err(); err != nil {
+			sendProtobufError(c, http.StatusInternalServerError, "Failed during throw iteration")
+			return
+		}
+
+		sendProtobufResponse(c, http.StatusOK, &pb.GetThrowsResponse{Throws: throws})
+	}
+}
+
+func DeleteThrow(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.GetString("userID")
+		if userID == "" {
+			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+
+		throwID := c.Param("id")
+		if throwID == "" {
+			sendProtobufError(c, http.StatusBadRequest, "Throw ID is required")
+			return
+		}
+
+		result, err := db.Exec(`
+			DELETE FROM throws
+			WHERE id = $1 AND user_id = $2
+		`, throwID, userID)
+		if err != nil {
+			sendProtobufError(c, http.StatusInternalServerError, "Failed to delete throw")
+			return
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			sendProtobufError(c, http.StatusInternalServerError, "Failed to validate deletion")
+			return
+		}
+
+		if rowsAffected == 0 {
+			sendProtobufError(c, http.StatusNotFound, "Throw not found")
+			return
+		}
+
+		sendProtobufResponse(c, http.StatusOK, &pb.ThrowResponse{Message: "Throw deleted", Id: throwID})
+	}
+}
+
 // User Settings API Handlers
 
 func GetUserSettings(db *sql.DB) gin.HandlerFunc {

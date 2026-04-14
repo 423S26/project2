@@ -96,6 +96,22 @@ message ThrowResponse {
   string id = 2;
 }
 
+message ThrowListItem {
+  string id = 1;
+  string session_id = 2;
+  string session_label = 3;
+  string disc_name = 4;
+  string disc_type = 5;
+  double distance = 6;
+  double flight_time = 7;
+  double exit_velocity = 8;
+  google.protobuf.Timestamp timestamp = 9;
+}
+
+message GetThrowsResponse {
+  repeated ThrowListItem throws = 1;
+}
+
 // ============ USER SETTINGS MESSAGES ============
 
 message UserSettingsRequest {

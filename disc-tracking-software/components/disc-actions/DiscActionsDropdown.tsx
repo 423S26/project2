@@ -67,6 +67,17 @@ export default function DiscActionsDropdown({
     }
   }, [connectedDevice]);
 
+  useEffect(() => {
+    bleManager.onSyncStatus((status) => {
+      if (status === 'error') {
+        toast.error('Failed to sync telemetry batch. It will retry on your next throw.');
+      }
+      if (status === 'success') {
+        toast.success('Telemetry batch synced.');
+      }
+    });
+  }, []);
+
   const toggleDropdown = () => setIsOpen(!isOpen);
   const closeDropdown = () => {
     setIsOpen(false);
@@ -98,13 +109,13 @@ export default function DiscActionsDropdown({
       // Connect to hardware using Web Bluetooth
       await bleManager.connect(selectedDisc.connectionNumber || selectedDisc.id);
       
-      // Connect to device context for WebSocket
+      // Track active hardware device in shared context
       connectDevice(selectedDisc.connectionNumber || selectedDisc.id, selectedDisc.name);
 
       setSyncStatus('success');
       setTrackerDistance(285); // Placeholder distance - will be updated from telemetry
       closeDropdown();
-      toast.success(`Connected to ${selectedDisc.name}. Telemetry streaming active.`);
+      toast.success(`Connected to ${selectedDisc.name}. Telemetry batching is active.`);
     } catch (error) {
       setSyncStatus('error');
       toast.error(getErrorMessage(error, 'Unable to connect to device. Check Bluetooth and try again.'));
@@ -176,6 +187,8 @@ export default function DiscActionsDropdown({
   const startTiming = () => {
     if (isRunning) return;
 
+    bleManager.markThrowStarted();
+
     setIsRunning(true);
     setJustStopped(false);
     const start = Date.now() - elapsedTime * 1000;
@@ -190,6 +203,7 @@ export default function DiscActionsDropdown({
       timerRef.current = null;
     }
     setIsRunning(false);
+    void bleManager.markThrowLanded();
 
     if (trackerDistance && trackerDistance > 0 && elapsedTime > 0.5) {
       setShowThrowResults(true);

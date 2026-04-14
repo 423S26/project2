@@ -1,4 +1,4 @@
-import LiveTracker from '@/components/GoSocket';
+import LiveTracker from '@/components/TelemetryLiveTracker';
 
 export default function TelemetryTestPage() {
   return (

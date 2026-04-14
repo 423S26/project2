@@ -1,103 +1,87 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
-	"time"
 
 	"project2/disc-tracking-software/pb"
+
 	"google.golang.org/protobuf/proto"
 )
 
-// Mock Hub for testing since DetectThrowPhases uses it
-func setupTestHub() *Hub {
-	return &Hub{
-		broadcast: make(chan []byte, 10), // Buffered channel to prevent blocking
+func makeBearerToken(t *testing.T, secret string, claims map[string]any) string {
+	t.Helper()
+
+	headerJSON := `{"alg":"HS256","typ":"JWT"}`
+	payloadBytes, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("failed to marshal claims: %v", err)
+	}
+
+	headerPart := base64.RawURLEncoding.EncodeToString([]byte(headerJSON))
+	payloadPart := base64.RawURLEncoding.EncodeToString(payloadBytes)
+	signingInput := headerPart + "." + payloadPart
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signingInput))
+	sigPart := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	return "Bearer " + signingInput + "." + sigPart
+}
+
+func TestParseAndVerifyBearerToken(t *testing.T) {
+	secret := "test-secret"
+	bearer := makeBearerToken(t, secret, map[string]any{"user_id": "user-123"})
+
+	claims, err := parseAndVerifyBearerToken(bearer, secret)
+	if err != nil {
+		t.Fatalf("expected token to verify, got error: %v", err)
+	}
+
+	if extractUserIDFromClaims(claims) != "user-123" {
+		t.Fatalf("unexpected user id: got %q", extractUserIDFromClaims(claims))
 	}
 }
 
-func TestDetectThrowPhases(t *testing.T) {
-	// Setup
-	hub := setupTestHub()
-	// Reset active sessions map
-	activeSessions = make(map[string]*ThrowSession)
+func TestParseAndVerifyBearerToken_BadSignature(t *testing.T) {
+	secret := "test-secret"
+	bearer := makeBearerToken(t, secret, map[string]any{"sub": "user-999"})
+	bearer = strings.Replace(bearer, "Bearer ", "Bearer bad", 1)
 
-	deviceID := "device-123"
-
-	// Test Case 1: Detect Launch
-	// Trigger: RPM > 400
-	pingLaunch := &pb.Ping{
-		DeviceId:  deviceID,
-		Timestamp: time.Now().UnixMilli(),
-		AccelZ:    15.0, // High G
+	_, err := parseAndVerifyBearerToken(bearer, secret)
+	if err == nil {
+		t.Fatalf("expected invalid token error")
 	}
-	currentRPMLaunch := 500.0 // > 400
+}
 
-	DetectThrowPhases(pingLaunch, currentRPMLaunch, hub)
+func TestCalculateTelemetrySummary(t *testing.T) {
+	lat1 := 37.7749
+	lon1 := -122.4194
+	alt1 := 10.0
+	lat2 := 37.7754
+	lon2 := -122.4189
+	alt2 := 15.0
 
-	session, exists := activeSessions[deviceID]
-	if !exists {
-		t.Errorf("Expected session to be created for launch, but it wasn't")
-	}
-	if !session.IsActive {
-		t.Errorf("Expected session to be active, got inactive")
-	}
-	if session.MaxRPM != currentRPMLaunch {
-		t.Errorf("Expected MaxRPM to be %f, got %f", currentRPMLaunch, session.MaxRPM)
+	pings := []*pb.Ping{
+		{DeviceId: "disc-1", Latitude: &lat1, Longitude: &lon1, Altitude: &alt1, AccelX: 5, AccelY: 5},
+		{DeviceId: "disc-1", Latitude: &lat2, Longitude: &lon2, Altitude: &alt2, AccelX: 8, AccelY: 6},
 	}
 
-	// Read from channel to clear it (simulating broadcast)
-	select {
-	case msg := <-hub.broadcast:
-		// Optional: Verify message content if needed
-		_ = msg
-	default:
-		t.Errorf("Expected broadcast message on launch, got none")
+	distanceFt, releaseAngle, maxRPM := calculateTelemetrySummary(pings)
+	if distanceFt <= 0 {
+		t.Fatalf("expected positive distance, got %f", distanceFt)
+	}
+	if maxRPM <= 0 {
+		t.Fatalf("expected positive maxRPM, got %f", maxRPM)
 	}
 
-	// Test Case 2: Update Max RPM
-	// RPM increases
-	pingUpdate := &pb.Ping{
-		DeviceId:  deviceID,
-		Timestamp: time.Now().UnixMilli(),
-		AccelZ:    5.0,
-	}
-	currentRPMHigher := 800.0
-
-	DetectThrowPhases(pingUpdate, currentRPMHigher, hub)
-
-	if session.MaxRPM != currentRPMHigher {
-		t.Errorf("Expected MaxRPM to update to %f, got %f", currentRPMHigher, session.MaxRPM)
-	}
-
-	// Test Case 3: Detect Landing
-	// Trigger: RPM < 100 AND Z-axis ~ 1.0 (gravity)
-	// Must ensure duration > 1.5s to avoid discard
-
-	// Fast forward time for valid throw duration
-	session.StartPos.Timestamp = time.Now().Add(-2 * time.Second).UnixMilli()
-
-	pingLand := &pb.Ping{
-		DeviceId:  deviceID,
-		Timestamp: time.Now().UnixMilli(),
-		AccelZ:    1.05, // Close to 1.0
-	}
-	currentRPMLand := 50.0 // < 100
-
-	DetectThrowPhases(pingLand, currentRPMLand, hub)
-
-	// Session should be removed from activeSessions or marked inactive
-	// The code deletes it from the map
-	_, existsAfterLand := activeSessions[deviceID]
-	if existsAfterLand {
-		t.Errorf("Expected session to be removed after landing, but it still exists")
-	}
-
-	// Check if broadcast happened
-	select {
-	case <-hub.broadcast:
-		// Good
-	default:
-		t.Errorf("Expected broadcast message on landing, got none")
+	if fmt.Sprintf("%.1f", releaseAngle) == "0.0" {
+		t.Fatalf("expected non-zero release angle, got %f", releaseAngle)
 	}
 }
 
@@ -106,6 +90,7 @@ func TestTelemetryUpdateProtobufContract(t *testing.T) {
 		DeviceId: "disc-42",
 		Lat:      37.7749,
 		Lon:      -122.4194,
+		Alt:      proto.Float64(5.0),
 		Rpm:      812,
 		Wobble:   0.123,
 	}
@@ -138,35 +123,5 @@ func TestTelemetryUpdateProtobufContract(t *testing.T) {
 	}
 	if decoded.Wobble != input.Wobble {
 		t.Fatalf("wobble mismatch: got %f want %f", decoded.Wobble, input.Wobble)
-	}
-}
-
-func TestDetectThrowPhasesBroadcastPayloadIsThrowStatus(t *testing.T) {
-	hub := setupTestHub()
-	activeSessions = make(map[string]*ThrowSession)
-
-	deviceID := "device-status-1"
-	launchPing := &pb.Ping{
-		DeviceId:  deviceID,
-		Timestamp: time.Now().UnixMilli(),
-		AccelZ:    15.0,
-	}
-
-	DetectThrowPhases(launchPing, 500.0, hub)
-
-	select {
-	case payload := <-hub.broadcast:
-		msg := &pb.ThrowStatus{}
-		if err := proto.Unmarshal(payload, msg); err != nil {
-			t.Fatalf("expected ThrowStatus protobuf payload, unmarshal failed: %v", err)
-		}
-		if msg.DeviceId != deviceID {
-			t.Fatalf("unexpected device id: got %q want %q", msg.DeviceId, deviceID)
-		}
-		if msg.Status != "IN_FLIGHT" {
-			t.Fatalf("unexpected status: got %q want %q", msg.Status, "IN_FLIGHT")
-		}
-	default:
-		t.Fatalf("expected broadcast payload but channel was empty")
 	}
 }

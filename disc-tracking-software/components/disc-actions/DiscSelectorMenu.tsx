@@ -108,7 +108,7 @@ export default function DiscSelectorMenu({
             onClick={() => {
               // TODO (Backend): Replace fake sync with real hardware connection
               // Example:
-              // 1. Connect via Bluetooth/WebSocket using selectedDisc.connectionNumber
+              // 1. Connect via Bluetooth and start telemetry upload flow using selectedDisc.connectionNumber
               // 2. Request current distance from device
               // 3. Update parent state: setTrackerDistance(realDistance)
               // 4. Set syncStatus('success') or 'error'

@@ -22,7 +22,7 @@ export default function TrackerDisplay({ distance, unit = 'feet' }: Props) {
   // Battery Level
   // TODO (Backend/Hardware): Replace static batteryLevel with real data from disc tracker
   // Integration points:
-  // - WebSocket message: { type: "battery", level: 87 }
+  // - Telemetry upload response: { battery_level: 87 }
   // - Capacitor plugin (for native iOS/Android) listening to device events
   // - Update frequency: every 10-30 seconds or on change
   // ──────────────────────────────────────────────────────────────

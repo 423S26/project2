@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
+import { dirname } from "path";
+import { fileURLToPath } from "url";
+
+const configDir = dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    // Keep module resolution scoped to this app when multiple lockfiles exist.
+    root: configDir,
+  },
   
   experimental: {
     optimizePackageImports: ['lucide-react'],

@@ -1,18 +1,26 @@
 // components/ThrowStatisticsOverlay.tsx
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ThrowResults from '@/components/disc-actions/ThrowResults';
 import { Trash2 } from 'lucide-react'; // ← Added for trash icon
+import { sessionAPI, throwAPI } from '@/lib/api-client';
 
 type ThrowData = {
   id: string;
+  sessionId: string;
+  sessionName: string;
   discName: string;
   discType: string;
   distance: number;
   time: number;
   velocity: number;
   timestamp: string;
+};
+
+type SessionOption = {
+  id: string;
+  label: string;
 };
 
 type Props = {
@@ -23,33 +31,92 @@ type Props = {
 
 export default function ThrowStatisticsOverlay({ isOpen, onClose, activeSession }: Props) {
   const [selectedSession, setSelectedSession] = useState<string | null>(activeSession);
-  
-  // TODO (Backend): Replace mock data with real throws fetched from server
-  // GET /api/throws?sessionId={selectedSession} or GET /api/sessions/{sessionId}/throws
-  // Include disc information, metrics, and timestamp for each throw
-  const [throws, setThrows] = useState<ThrowData[]>([
-    { id: 't1', discName: 'Star Destroyer', discType: 'Distance Driver', distance: 285, time: 4.2, velocity: 67.9, timestamp: '2026-04-02T14:30:00' },
-    { id: 't2', discName: 'Buzz', discType: 'Midrange', distance: 180, time: 3.1, velocity: 58.1, timestamp: '2026-04-02T14:35:00' },
-  ]);
+  const [throws, setThrows] = useState<ThrowData[]>([]);
+  const [sessions, setSessions] = useState<SessionOption[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [throwToDelete, setThrowToDelete] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedSession(activeSession);
+  }, [activeSession]);
+
+  const loadThrows = async () => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const throwItems = (await throwAPI.getThrows()).map((item) => ({
+        id: item.id,
+        sessionId: item.session_id,
+        sessionName: item.session_label,
+        discName: item.disc_name,
+        discType: item.disc_type,
+        distance: Number(item.distance || 0),
+        time: Number(item.flight_time || 0),
+        velocity: Number(item.exit_velocity || 0),
+        timestamp: item.timestamp,
+      }));
+
+      setThrows(throwItems);
+
+      const activeSessions = await sessionAPI.getActiveSessions();
+      const sessionMap = new Map<string, string>();
+      activeSessions.forEach((session) => {
+        sessionMap.set(session.id, `Active Session ${session.id.slice(0, 8)}`);
+      });
+      throwItems.forEach((item) => {
+        if (item.sessionId) {
+          sessionMap.set(item.sessionId, item.sessionName || `Session ${item.sessionId.slice(0, 8)}`);
+        }
+      });
+
+      setSessions(
+        Array.from(sessionMap.entries()).map(([id, label]) => ({
+          id,
+          label,
+        }))
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to load throw statistics.';
+      setErrorMessage(message);
+      setThrows([]);
+      setSessions([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    void loadThrows();
+  }, [isOpen]);
+
+  const filteredThrows = useMemo(() => {
+    if (!selectedSession) {
+      return throws;
+    }
+    return throws.filter((throwItem) => throwItem.sessionId === selectedSession);
+  }, [throws, selectedSession]);
 
   const handleDeleteThrow = (throwId: string) => {
     setThrowToDelete(throwId);
     setShowDeleteConfirm(true);
   };
 
-  // ──────────────────────────────────────────────────────────────
-  // Confirm Delete Handler
-  // TODO (Backend): DELETE /api/throws/{throwId}
-  // Should remove the throw from the database and from the current session
-  // After success, refresh the throws list for the selected session
-  // ──────────────────────────────────────────────────────────────
-  const confirmDeleteThrow = () => {
+  const confirmDeleteThrow = async () => {
     if (throwToDelete) {
-      setThrows(throws.filter(t => t.id !== throwToDelete));
-      // TODO (Backend): Call DELETE/update endpoint here and handle response
+      try {
+        await throwAPI.deleteThrow(throwToDelete);
+
+        setThrows((previous) => previous.filter((t) => t.id !== throwToDelete));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to delete throw.';
+        setErrorMessage(message);
+      }
     }
     setShowDeleteConfirm(false);
     setThrowToDelete(null);
@@ -83,19 +150,22 @@ export default function ThrowStatisticsOverlay({ isOpen, onClose, activeSession 
               className="w-full bg-[#223066] border border-[#456fb6]/60 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#54c4c3]"
             >
               <option value="">All Sessions</option>
-              {['Rose Park front 9', 'Riverside Round 1', 'Practice Session'].map((session) => (
-                <option key={session} value={session}>
-                  {session}
+              {sessions.map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.label}
                 </option>
               ))}
             </select>
-            {/* TODO (Backend): Replace hardcoded sessions with real data from GET /api/sessions */}
           </div>
 
           {/* Throws List */}
           <div className="flex-1 overflow-y-auto p-6 space-y-8">
-            {throws.length > 0 ? (
-              throws.map((throwData, index) => (
+            {isLoading ? (
+              <div className="text-center py-20 text-white/60">Loading throw statistics...</div>
+            ) : errorMessage ? (
+              <div className="text-center py-20 text-red-300">{errorMessage}</div>
+            ) : filteredThrows.length > 0 ? (
+              filteredThrows.map((throwData, index) => (
                 <div key={throwData.id} className="bg-[#223066]/40 border border-[#456fb6]/40 rounded-xl p-6">
                   <div className="flex justify-between items-start mb-4">
                     <div>
@@ -104,6 +174,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onClose, activeSession 
                       </h4>
                       <p className="text-[#54c4c3] text-base mt-1">Throw #{index + 1}</p>
                       <p className="text-sm text-white/60 mt-1">{throwData.discType}</p>
+                      <p className="text-xs text-white/50 mt-1">{new Date(throwData.timestamp).toLocaleString()}</p>
                     </div>
 
                     {/* Trash Icon Button */}

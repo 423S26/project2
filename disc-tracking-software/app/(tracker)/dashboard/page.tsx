@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import DashboardHeader from '@/components/DashboardHeader';
 import DiscActionsDropdown from '@/components/disc-actions/DiscActionsDropdown';
 import ThrowStatisticsOverlay from '@/components/ThrowStatisticsOverlay';
-import LiveTracker from '@/components/GoSocket';
+import LiveTracker from '@/components/TelemetryLiveTracker';
 import Link from 'next/link';
 import { getUserNameAction } from '@/lib/actions/auth-actions';
 import { sessionAPI, discAPI } from '@/lib/api-client';

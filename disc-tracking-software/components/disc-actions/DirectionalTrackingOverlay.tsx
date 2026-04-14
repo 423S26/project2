@@ -6,7 +6,7 @@
 //    Use event.alpha or event.webkitCompassHeading for true north-based direction
 // 2. Web Bluetooth from disc tracker: Receive heading updates via GATT characteristic
 // 3. Capacitor plugin (native): Use @capacitor/geolocation or custom plugin for heading
-// 4. WebSocket from server: Server can fuse GPS + IMU data and push { heading: 42 } (degrees)
+// 4. Backend telemetry processing: Server can fuse GPS + IMU data and return { heading: 42 } (degrees)
 // 
 // Example real implementation sketch:
 // useEffect(() => {

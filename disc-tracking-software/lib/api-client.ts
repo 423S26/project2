@@ -5,7 +5,6 @@
 import { ProtoEncoder, ProtoDecoder } from './pb/codec';
 import {
   APIConnectionError,
-  ValidationError,
   retryWithBackoff,
   logError,
   createDebugInfo,
@@ -14,7 +13,11 @@ import {
   assertType,
 } from './errors';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1";
+const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_API_ENDPOINT ||
+  "http://localhost:8080/api/v1"
+).replace(/\/+$/, "");
 const API_TIMEOUT = 30000; // 30 seconds
 const MAX_RETRIES = 3;
 
@@ -52,24 +55,50 @@ export interface UserSettings {
   updated_at: string;
 }
 
+export interface ThrowRecord {
+  id: string;
+  session_id: string;
+  session_label: string;
+  disc_name: string;
+  disc_type: string;
+  distance: number;
+  flight_time: number;
+  exit_velocity: number;
+  timestamp: string;
+}
+
 // Helper function to get auth headers with validation
 function getAuthHeaders(): HeadersInit {
-  try {
-    const headers: HeadersInit = {
-      "Content-Type": "application/protobuf",
-      "Accept": "application/protobuf",
-    };
+  const headers: HeadersInit = {
+    "Content-Type": "application/protobuf",
+    "Accept": "application/protobuf",
+  };
 
-    // For now, using X-User-ID header (replace with actual auth in production)
-    const userId = localStorage.getItem("userId") || "test-user";
-    assert(userId.length > 0, 'User ID is empty');
-    (headers as Record<string, string>)["X-User-ID"] = userId;
-
+  // In SSR or pre-auth states, send base headers and let the backend decide auth.
+  if (typeof window === 'undefined') {
     return headers;
+  }
+
+  try {
+    const token =
+      localStorage.getItem("authToken") ||
+      localStorage.getItem("jwtToken") ||
+      localStorage.getItem("accessToken");
+
+    if (token && token.trim().length > 0) {
+      (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
+      return headers;
+    }
+
+    const userId = localStorage.getItem("userId");
+    if (userId && userId.trim().length > 0) {
+      (headers as Record<string, string>)["X-User-ID"] = userId;
+    }
   } catch (error) {
     logError(error instanceof Error ? error : new Error(String(error)), 'getAuthHeaders');
-    throw new ValidationError('Failed to construct auth headers', 'headers', null, 'valid HeadersInit');
   }
+
+  return headers;
 }
 
 // Helper function with timeout wrapper
@@ -366,6 +395,88 @@ function decodeSessionList(data: Uint8Array): Session[] {
   return sessions;
 }
 
+function decodeThrowRecord(data: Uint8Array): ThrowRecord {
+  const decoder = new ProtoDecoder(data);
+  const item: ThrowRecord = {
+    id: '',
+    session_id: '',
+    session_label: '',
+    disc_name: '',
+    disc_type: '',
+    distance: 0,
+    flight_time: 0,
+    exit_velocity: 0,
+    timestamp: '',
+  };
+
+  while (decoder.getOffset() < data.length) {
+    const tag = decoder.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    switch (fieldNumber) {
+      case 1:
+        item.id = decoder.decodeString();
+        break;
+      case 2:
+        item.session_id = decoder.decodeString();
+        break;
+      case 3:
+        item.session_label = decoder.decodeString();
+        break;
+      case 4:
+        item.disc_name = decoder.decodeString();
+        break;
+      case 5:
+        item.disc_type = decoder.decodeString();
+        break;
+      case 6:
+        item.distance = decoder.decodeDouble();
+        break;
+      case 7:
+        item.flight_time = decoder.decodeDouble();
+        break;
+      case 8:
+        item.exit_velocity = decoder.decodeDouble();
+        break;
+      case 9:
+        item.timestamp = decodeProtoTimestamp(decoder);
+        break;
+      default:
+        skipUnknownField(decoder, wireType);
+        break;
+    }
+  }
+
+  if (!item.timestamp) {
+    item.timestamp = new Date().toISOString();
+  }
+
+  return item;
+}
+
+function decodeThrowList(data: Uint8Array): ThrowRecord[] {
+  const decoder = new ProtoDecoder(data);
+  const throws: ThrowRecord[] = [];
+
+  while (decoder.getOffset() < data.length) {
+    const tag = decoder.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    if (fieldNumber === 1 && wireType === 2) {
+      const length = decoder.decodeVarint();
+      const bytes = decoder.readBytes(length);
+      throws.push(decodeThrowRecord(bytes));
+      continue;
+    }
+
+    skipUnknownField(decoder, wireType);
+  }
+
+  return throws;
+}
+
 // Convert decoded proto response to frontend Disc
 function decodeDisc(decoder: ProtoDecoder): Disc {
   return {
@@ -614,6 +725,43 @@ export const throwAPI = {
       return {message, id};
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.saveThrow');
+      throw error;
+    }
+  },
+
+  getThrows: async (sessionId?: string): Promise<ThrowRecord[]> => {
+    try {
+      const endpoint = sessionId
+        ? `/throws?sessionId=${encodeURIComponent(sessionId)}`
+        : "/throws";
+      const response = await apiCallProtobuf<Uint8Array>(endpoint, undefined, "GET");
+      return decodeThrowList(response);
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.getThrows');
+      throw error;
+    }
+  },
+
+  deleteThrow: async (throwId: string): Promise<{message: string; id: string}> => {
+    try {
+      assertNotNull(throwId, 'throwId');
+      assertType(throwId, 'string', 'throwId');
+      assert(throwId.length > 0, 'Throw ID is empty');
+
+      const response = await apiCallProtobuf<Uint8Array>(
+        `/throws/${throwId}`,
+        undefined,
+        "DELETE"
+      );
+
+      const decoder = new ProtoDecoder(response);
+      const message = decoder.decodeString();
+      const id = decoder.decodeString();
+      assert(message.length > 0, 'Received empty message from server');
+      assert(id.length > 0, 'Received empty ID from server');
+      return {message, id};
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.deleteThrow');
       throw error;
     }
   },

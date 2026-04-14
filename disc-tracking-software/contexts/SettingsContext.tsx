@@ -110,7 +110,7 @@ export function useSettings() {
 //    - selectedMetrics: array of strings (MetricKey values)
 //
 // 4. Future: Real-time sync
-//    - Use WebSocket or SSE to push settings changes from server
+//    - Use polling or upload acknowledgements to reflect settings changes from server
 //    - Useful if user changes settings from another device
 //
 // 5. Authentication

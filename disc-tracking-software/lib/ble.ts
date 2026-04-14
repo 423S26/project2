@@ -42,8 +42,17 @@ export interface BLEConnection {
 export class BLEManager {
   private connection: BLEConnection | null = null;
   private pingBuffer: PingData[] = [];
+  private pendingBatches: PingData[][] = [];
+  private throwActive = false;
   private onPingCallback?: (ping: PingData) => void;
-  private syncInterval?: NodeJS.Timeout;
+  private onSyncStatusCallback?: (status: 'idle' | 'success' | 'error') => void;
+
+  private readonly API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+  private readonly PENDING_BATCHES_KEY = 'pendingTelemetryBatchesV1';
+
+  constructor() {
+    this.pendingBatches = this.loadPendingBatches();
+  }
 
   async connect(deviceId: string): Promise<void> {
     try {
@@ -82,8 +91,8 @@ export class BLEManager {
           if (server.connected) {
             server.disconnect();
           }
+          this.enqueueCurrentThrow();
           this.connection = null;
-          this.stopSync();
         },
       };
 
@@ -91,8 +100,8 @@ export class BLEManager {
       await characteristic.startNotifications();
       characteristic.addEventListener('characteristicvaluechanged', this.handlePingNotification.bind(this));
 
-      // Start periodic sync
-      this.startSync();
+      // Attempt to flush previously failed batches after reconnect.
+      void this.flushPendingBatches();
 
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -114,6 +123,21 @@ export class BLEManager {
     this.onPingCallback = callback;
   }
 
+  onSyncStatus(callback: (status: 'idle' | 'success' | 'error') => void): void {
+    this.onSyncStatusCallback = callback;
+  }
+
+  markThrowStarted(): void {
+    this.throwActive = true;
+    this.pingBuffer = [];
+    this.onSyncStatusCallback?.('idle');
+  }
+
+  async markThrowLanded(): Promise<void> {
+    this.enqueueCurrentThrow();
+    await this.flushPendingBatches();
+  }
+
   private handlePingNotification(event: Event): void {
     try {
       const target = event.target as { value?: DataView };
@@ -122,7 +146,9 @@ export class BLEManager {
       const data = new Uint8Array(target.value.buffer);
       const ping = decodePing(data);
 
-      this.pingBuffer.push(ping);
+      if (this.throwActive) {
+        this.pingBuffer.push(ping);
+      }
 
       if (this.onPingCallback) {
         this.onPingCallback(ping);
@@ -133,52 +159,109 @@ export class BLEManager {
     }
   }
 
-  private startSync(): void {
-    // Sync every 5 seconds or when buffer reaches 10 pings
-    this.syncInterval = setInterval(() => {
-      if (this.pingBuffer.length >= 10) {
-        this.syncBuffer();
-      }
-    }, 5000);
-  }
-
-  private stopSync(): void {
-    if (this.syncInterval) {
-      clearInterval(this.syncInterval);
-      this.syncInterval = undefined;
+  private enqueueCurrentThrow(): void {
+    this.throwActive = false;
+    if (this.pingBuffer.length === 0) {
+      return;
     }
-    this.syncBuffer(); // Send remaining pings
+
+    this.pendingBatches.push([...this.pingBuffer]);
+    this.pingBuffer = [];
+    this.persistPendingBatches();
   }
 
-  private async syncBuffer(): Promise<void> {
-    if (this.pingBuffer.length === 0) return;
+  private async flushPendingBatches(): Promise<void> {
+    const hadPending = this.pendingBatches.length > 0;
+    if (!hadPending) {
+      return;
+    }
+
+    const remaining: PingData[][] = [];
+    for (const batch of this.pendingBatches) {
+      try {
+        await this.uploadBatch(batch);
+      } catch (error) {
+        logError(error instanceof Error ? error : new Error(String(error)), 'flushPendingBatches');
+        remaining.push(batch);
+      }
+    }
+
+    this.pendingBatches = remaining;
+    this.persistPendingBatches();
+    this.onSyncStatusCallback?.(remaining.length === 0 ? 'success' : 'error');
+  }
+
+  private async uploadBatch(pings: PingData[]): Promise<void> {
+    const payload = encodeMessage({ pings });
+    const requestBody = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer;
+
+    const response = await fetch(`${this.API_BASE_URL}/api/v1/telemetry/upload`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: requestBody,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Telemetry upload failed: ${response.status}`);
+    }
+  }
+
+  private getAuthHeaders(): HeadersInit {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/protobuf',
+      'Accept': 'application/json',
+    };
+
+    const token =
+      localStorage.getItem('authToken') ||
+      localStorage.getItem('jwtToken') ||
+      localStorage.getItem('accessToken');
+
+    if (token && token.trim().length > 0) {
+      headers.Authorization = `Bearer ${token}`;
+      return headers;
+    }
+
+    const userId = localStorage.getItem('userId');
+    if (userId && userId.trim().length > 0) {
+      headers['X-User-ID'] = userId;
+    }
+
+    return headers;
+  }
+
+  private loadPendingBatches(): PingData[][] {
+    if (typeof window === 'undefined') {
+      return [];
+    }
 
     try {
-      const batch = {
-        pings: this.pingBuffer,
-      };
-
-      const batchBytes = encodeMessage(batch);
-      const requestBody = batchBytes.buffer.slice(batchBytes.byteOffset, batchBytes.byteOffset + batchBytes.byteLength) as ArrayBuffer;
-
-      const response = await fetch('http://localhost:8080/api/v1/telemetry', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/protobuf',
-          'X-User-ID': 'test-user', // TODO: Use actual user ID from auth
-        },
-        body: requestBody,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Telemetry sync failed: ${response.status}`);
+      const raw = localStorage.getItem(this.PENDING_BATCHES_KEY);
+      if (!raw) {
+        return [];
       }
 
-      this.pingBuffer = []; // Clear buffer on success
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
 
+      return parsed.filter((batch) => Array.isArray(batch));
     } catch (error) {
-      logError(error instanceof Error ? error : new Error(String(error)), 'syncBuffer');
-      // Keep buffer for retry
+      logError(error instanceof Error ? error : new Error(String(error)), 'loadPendingBatches');
+      return [];
+    }
+  }
+
+  private persistPendingBatches(): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      localStorage.setItem(this.PENDING_BATCHES_KEY, JSON.stringify(this.pendingBatches));
+    } catch (error) {
+      logError(error instanceof Error ? error : new Error(String(error)), 'persistPendingBatches');
     }
   }
 }

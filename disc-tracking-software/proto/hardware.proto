@@ -33,7 +33,7 @@ message PingBatch {
   int64 batch_timestamp = 3;
 }
 
-// WebSocket message envelope
+// Telemetry message envelope (legacy compatibility)
 message ClientMessage {
   oneof data {
     Ping ping = 1;

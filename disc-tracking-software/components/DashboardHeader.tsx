@@ -1,36 +1,62 @@
 // components/DashboardHeader.tsx
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LogOut, Settings as SettingsIcon, X } from 'lucide-react';
 import { signOut } from 'next-auth/react';
 import Link from 'next/link';
 import { useSettings, MetricKey } from '@/contexts/SettingsContext';
+import { userSettingsAPI } from '@/lib/api-client';
+import { toast } from 'sonner';
 
 // IMPORTANT: This component manages the user settings panel.
-// Backend integration points are marked below.
+// Backend integration points are noted below.
 
 export default function DashboardHeader() {
   const { settings, updateSettings } = useSettings();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const toggleSettings = () => setIsSettingsOpen(!isSettingsOpen);
   const closeSettings = () => setIsSettingsOpen(false);
 
-  const handleSave = () => {
-    // TODO (Backend): When user clicks "Save & Close", send updated settings to Go server
-    // Example payload:
-    // {
-    //   userId: currentUser.id,
-    //   distanceUnit: settings.distanceUnit,
-    //   throwMode: settings.throwMode,
-    //   autoSaveThrows: settings.autoSaveThrows,
-    //   selectedMetrics: settings.selectedMetrics
-    // }
-    // Use fetch('/api/settings', { method: 'PATCH', body: JSON.stringify(...) })
-    // Then update local state only after successful response
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
 
-    closeSettings();
+    const loadServerSettings = async () => {
+      try {
+        const serverSettings = await userSettingsAPI.getSettings();
+        const unit = serverSettings.preferred_unit === 'meters' ? 'meters' : 'feet';
+        updateSettings({
+          distanceUnit: unit,
+          autoSaveThrows: serverSettings.auto_save_enabled,
+        });
+      } catch {
+        // Keeps local settings when server values are unavailable.
+      }
+    };
+
+    void loadServerSettings();
+  }, [isSettingsOpen]);
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      await userSettingsAPI.updateSettings({
+        preferredUnit: settings.distanceUnit,
+        autoSaveEnabled: settings.autoSaveThrows,
+        notificationsEnabled: true,
+      });
+      toast.success('Settings saved.');
+      closeSettings();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save settings.';
+      toast.error(message);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const toggleMetric = (key: MetricKey) => {
@@ -39,8 +65,6 @@ export default function DashboardHeader() {
       ? current.filter((m) => m !== key)
       : [...current, key];
 
-    // TODO (Backend): This is a live update. For real apps, you may want to debounce
-    // and batch updates instead of sending on every checkbox click?
     updateSettings({ selectedMetrics: updated });
   };
 
@@ -135,7 +159,6 @@ export default function DashboardHeader() {
                     <span className="text-white/90">Meters (m)</span>
                   </label>
                 </div>
-                {/* TODO (Backend): Save preference to user profile on change or on "Save & Close" */}
               </div>
 
               {/* Throw Mode */}
@@ -165,7 +188,6 @@ export default function DashboardHeader() {
                     <span className="text-white/90">Auto (Accelerometer)</span>
                   </label>
                 </div>
-                {/* TODO (Backend): Save preference to user profile */}
               </div>
 
               {/* Auto-Save */}
@@ -185,7 +207,6 @@ export default function DashboardHeader() {
                     </p>
                   </div>
                 </label>
-                {/* TODO (Backend): Save preference to user profile */}
               </div>
 
               {/* Throw Results Metrics */}
@@ -215,13 +236,13 @@ export default function DashboardHeader() {
                     </label>
                   ))}
                 </div>
-                {/* TODO (Backend): Save array of selected metrics to user profile */}
               </div>
 
               {/* Save button */}
               <div className="pt-8 pb-12">
                 <button
                   onClick={handleSave}
+                  disabled={isSaving}
                   className="
                     w-full py-4 px-6
                     bg-linear-to-r from-[#54c4c3] to-[#3daaa9]
@@ -230,11 +251,14 @@ export default function DashboardHeader() {
                     rounded-xl shadow-lg hover:shadow-xl
                     transition-all duration-300 transform hover:scale-[1.02]
                     focus:outline-none focus:ring-2 focus:ring-[#54c4c3]/50
+                    disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100
                   "
                 >
-                  Save & Close
+                  {isSaving ? 'Saving...' : 'Save & Close'}
                 </button>
-                {/* TODO (Backend): This button should trigger a PATCH request to update user settings */}
+                <p className="text-xs text-white/50 mt-3 text-center">
+                  Throw mode and metric visibility remain local preferences for now.
+                </p>
               </div>
             </div>
           </div>

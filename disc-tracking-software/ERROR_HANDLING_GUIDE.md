@@ -11,7 +11,7 @@ Comprehensive error handling module with custom error classes and assertion util
 #### Custom Error Classes:
 - **ProtoBufferError**: Binary encoding/decoding failures with context
 - **APIConnectionError**: HTTP and API communication failures with endpoint/status tracking
-- **FirmwareConnectionError**: WebSocket and device connection failures with device ID tracking
+- **FirmwareConnectionError**: device connection and telemetry transport failures with device ID tracking
 - **ValidationError**: Field validation failures with type information
 - **BoundsError**: Buffer boundary violations with offset tracking
 
@@ -177,18 +177,18 @@ Comprehensive error handling module with custom error classes and assertion util
 
 ---
 
-### 4. **components/GoSocket.tsx** (COMPLETE REWRITE - 300+ lines with error handling)
+### 4. **components/TelemetryLiveTracker.tsx** (COMPLETE REWRITE - 300+ lines with error handling)
 
 #### Connection Management:
 - **Configuration**:
   - Max reconnect attempts: 5
   - Initial delay: 1000ms
   - Max delay: 30000ms
-  - WebSocket timeout: 30000ms
+  - Telemetry fetch timeout: 30000ms
   - Exponential backoff with configurable limits
 
 #### Error Handling:
-- **WebSocket URL Validation**: Checks for empty/missing URL
+- **Telemetry endpoint validation**: Checks for empty/missing API URL
 - **Connection Timeout**: 30-second timeout with AbortController-like behavior
 - **Message Validation**: 
   - Empty message detection
@@ -199,7 +199,7 @@ Comprehensive error handling module with custom error classes and assertion util
 #### Connection State Tracking:
 ```typescript
 interface ConnectionState {
-  connected: boolean;        // WebSocket open
+  connected: boolean;        // telemetry polling loop active
   healthy: boolean;          // Heartbeat active
   reconnectAttempt: number;  // Current attempt count
   lastError?: string;        // Last error message
@@ -210,7 +210,7 @@ interface ConnectionState {
 #### Reconnection Logic:
 - Exponential backoff: `delay = min(1000 * 2^attempt, 30000)`
 - Configurable max attempts (5)
-- Automatic reconnection on socket error/close
+- Automatic retry on transport/network failures
 - Graceful dependency on error code (1000 = normal, no retry)
 - Connection monitoring with heartbeat tracking
 
@@ -233,7 +233,7 @@ interface ConnectionState {
   - Last update timestamp
 
 #### Error Recovery:
-- Parse errors don't disconnect (continue operation)
+- Parse errors do not stop telemetry polling (continue operation)
 - Partial message corruption is warned but not fatal
 - Missing fields are logged with field names
 - Connection state is continuously updated
@@ -294,7 +294,7 @@ try {
 ### Catching Firmware Errors
 ```typescript
 try {
-  // GoSocket.tsx handles internally with reconnection
+  // TelemetryLiveTracker.tsx handles internally with retry and recovery
 } catch (error) {
   if (error instanceof FirmwareConnectionError) {
     console.error(`Device ${error.deviceId} connection failed`);
@@ -332,7 +332,7 @@ if (!status.isHealthy) {
 ### Integration Tests
 - API client retry logic with simulated timeouts
 - Connection recovery after network interruptions
-- Partial message handling in WebSocket
+- Partial message handling in telemetry payloads
 
 ### Manual Tests
 - Check browser console for formatted error messages
@@ -347,7 +347,7 @@ if (!status.isHealthy) {
 1. **Input Validation**: All user inputs validated before processing
 2. **Buffer Safety**: Explicit bounds checking prevents overflow
 3. **Type Safety**: TypeScript + assertions catch type mismatches
-4. **Connection Security**: WebSocket URL validation prevents injection
+4. **Connection Security**: API URL and auth header validation prevent injection
 5. **Error Information**: Errors don't leak sensitive data by default
 
 ---
@@ -357,7 +357,7 @@ if (!status.isHealthy) {
 - [x] All error classes properly exported
 - [x] Assertions integrated throughout codec
 - [x] API client has retry logic
-- [x] WebSocket has reconnection logic
+- [x] Telemetry transport has retry logic
 - [x] Connection monitoring implemented
 - [x] Debug info available for troubleshooting
 - [x] TypeScript compilation passes

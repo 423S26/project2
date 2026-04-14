@@ -1,23 +1,51 @@
 //NOTE: UNIT TESTS ARE IN A SEPARATE FILE (main_test.go) TO AVOID IMPORT CYCLES WITH THE PROTOBUF STRUCTS
 //NOTE: ASSERTS WILL BE IMPLEMENTED INLINE
-//NOTE: Refactored to use HTTP POST instead of WebSocket for telemetry
+//NOTE: Telemetry ingestion uses batched HTTP POST uploads
 
 package main
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql" //placeholder before hooking up to actual database, but calls will be very similar in their place here
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"project2/disc-tracking-software/pb"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"google.golang.org/protobuf/proto"
 )
+
+//------------------------------------------
+
+func loadDotEnvFiles() {
+	// Load from current working directory first.
+	_ = godotenv.Load(".env.local", ".env")
+
+	// Then load relative to this file so go run works from different cwd values.
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return
+	}
+
+	goDir := filepath.Dir(file)
+	repoRoot := filepath.Clean(filepath.Join(goDir, "..", "..", ".."))
+	_ = godotenv.Overload(filepath.Join(repoRoot, ".env.local"), filepath.Join(repoRoot, ".env"))
+}
 
 //------------------------------------------
 
@@ -41,13 +69,17 @@ var (
 	activeSessions = make(map[string]*ThrowSession)
 )
 
+type AuthClaims struct {
+	Sub    string `json:"sub"`
+	UserID string `json:"user_id"`
+}
+
 //------------------------------------------
 
 func ValidatePing(p *pb.Ping) bool {
 	// HDOP < 2.0 is excellent, > 5.0 is junk.
 	// We ignore anything above 4.0 to prevent "jitter"
-
-	if p.Hdop == nil || *p.Hdop > 4.0 || p.Satellites == nil || *p.Satellites < 5 {
+	if p == nil || p.Hdop == nil || p.GetHdop() > 4.0 || p.Satellites == nil || p.GetSatellites() < 5 {
 		return false
 	}
 	return true
@@ -85,9 +117,12 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 
 func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
 	timeDelta := float64(p2.Timestamp-p1.Timestamp) / 1000.0 // seconds
+	if timeDelta <= 0 {
+		return 0
+	}
 
 	// Distance between two points
-	dist := Haversine(p1.Lat, p1.Lon, p2.Lat, p2.Lon)
+	dist := Haversine(p1.GetLatitude(), p1.GetLongitude(), p2.GetLatitude(), p2.GetLongitude())
 
 	return dist / timeDelta
 }
@@ -129,19 +164,149 @@ func CalculateRPM(accelX, accelY float64, radiusMeters float64) float64 {
 	return rpm
 }
 
+func parseAndVerifyBearerToken(authHeader string, jwtSecret string) (*AuthClaims, error) {
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return nil, errors.New("missing bearer token")
+	}
+
+	token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("invalid JWT format")
+	}
+
+	signingInput := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, []byte(jwtSecret))
+	mac.Write([]byte(signingInput))
+	expectedSig := mac.Sum(nil)
+
+	providedSig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWT signature encoding: %w", err)
+	}
+
+	if !hmac.Equal(providedSig, expectedSig) {
+		return nil, errors.New("invalid JWT signature")
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWT payload encoding: %w", err)
+	}
+
+	var claims AuthClaims
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return nil, fmt.Errorf("invalid JWT payload JSON: %w", err)
+	}
+
+	return &claims, nil
+}
+
+func extractUserIDFromClaims(claims *AuthClaims) string {
+	if claims == nil {
+		return ""
+	}
+	if claims.UserID != "" {
+		return claims.UserID
+	}
+	return claims.Sub
+}
+
+func verifyDeviceOwnership(db *sql.DB, userID, deviceID string) (bool, error) {
+	var owned bool
+	err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM sessions
+			WHERE user_id = $1 AND device_id = $2
+		)
+	`, userID, deviceID).Scan(&owned)
+	if err != nil {
+		return false, err
+	}
+	return owned, nil
+}
+
+func calculateTelemetrySummary(pings []*pb.Ping) (float64, float64, float64) {
+	if len(pings) == 0 {
+		return 0, 0, 0
+	}
+
+	var totalDistanceMeters float64
+	var maxRPM float64
+	for i, ping := range pings {
+		rpm := CalculateRPM(float64(ping.GetAccelX()), float64(ping.GetAccelY()), SensorRadiusMeters)
+		if rpm > maxRPM {
+			maxRPM = rpm
+		}
+
+		if i == 0 {
+			continue
+		}
+
+		prev := pings[i-1]
+		totalDistanceMeters += Haversine(
+			prev.GetLatitude(),
+			prev.GetLongitude(),
+			ping.GetLatitude(),
+			ping.GetLongitude(),
+		)
+	}
+
+	first := pings[0]
+	last := pings[len(pings)-1]
+	horizontalMeters := Haversine(first.GetLatitude(), first.GetLongitude(), last.GetLatitude(), last.GetLongitude())
+	verticalMeters := last.GetAltitude() - first.GetAltitude()
+	releaseAngle := 0.0
+	if horizontalMeters > 0 {
+		releaseAngle = math.Atan2(verticalMeters, horizontalMeters) * (180.0 / math.Pi)
+	}
+
+	const metersToFeet = 3.28084
+	return totalDistanceMeters * metersToFeet, releaseAngle, maxRPM
+}
+
 // Telemetry API Handler - Process and store telemetry data via HTTP POST
 func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		userID := c.GetString("userID")
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authenticated user"})
+			return
+		}
+
 		// Read protobuf data from request body
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
 			return
 		}
 
 		var batch pb.SyncBatch
 		if err := proto.Unmarshal(body, &batch); err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to unmarshal protobuf"})
+			return
+		}
+
+		if len(batch.GetPings()) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "batch contains no pings"})
+			return
+		}
+
+		deviceID := strings.TrimSpace(batch.GetPings()[0].GetDeviceId())
+		if deviceID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "first ping is missing device_id"})
+			return
+		}
+
+		owned, err := verifyDeviceOwnership(db, userID, deviceID)
+		if err != nil {
+			log.Printf("[ProcessTelemetry] ownership query failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate device ownership"})
+			return
+		}
+		if !owned {
+			c.JSON(http.StatusForbidden, gin.H{"error": "user does not own device"})
 			return
 		}
 
@@ -155,12 +320,15 @@ func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 			processedPings++
 		}
 
-		resp := &pb.TelemetryResponse{
-			Message:        "Telemetry processed",
-			ProcessedCount: int32(processedPings),
-		}
-
-		sendProtobufResponse(c, http.StatusOK, resp)
+		distanceFt, releaseAngle, maxRPM := calculateTelemetrySummary(batch.GetPings())
+		c.JSON(http.StatusOK, gin.H{
+			"status":                 "success",
+			"processed_count":        processedPings,
+			"device_id":              deviceID,
+			"calculated_distance_ft": distanceFt,
+			"release_angle":          releaseAngle,
+			"max_rpm":                maxRPM,
+		})
 	}
 }
 
@@ -169,6 +337,9 @@ func processSinglePing(db *sql.DB, ping *pb.Ping) error {
 	// Validate ping data
 	if !ValidatePing(ping) {
 		return nil // Skip invalid pings silently
+	}
+	if ping.Latitude == nil || ping.Longitude == nil || ping.Altitude == nil {
+		return nil
 	}
 
 	// Calculate RPM from Centripetal Acceleration
@@ -181,13 +352,18 @@ func processSinglePing(db *sql.DB, ping *pb.Ping) error {
 		rpm = (omega * 60) / (2 * math.Pi)
 	}
 
+	hdop := float32(0)
+	if ping.Hdop != nil {
+		hdop = ping.GetHdop()
+	}
+
 	wobble := math.Abs(float64(ping.AccelZ))
 
 	// Persist to PostGIS
 	_, err := db.Exec(`
 		INSERT INTO throws (device_id, location, hdop, rpm, wobble_g, timestamp)
 		VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7, $8)`,
-		ping.DeviceId, ping.Lon, ping.Lat, ping.Alt, ping.Hdop, rpm, wobble,
+		ping.GetDeviceId(), ping.GetLongitude(), ping.GetLatitude(), ping.GetAltitude(), hdop, rpm, wobble,
 		time.Unix(ping.Timestamp/1000, 0),
 	)
 
@@ -235,7 +411,7 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 				DeviceId:  deviceId,
 				Lat:       lat,
 				Lon:       lon,
-				Alt:       alt,
+				Alt:       &alt,
 				Rpm:       rpm,
 				Wobble:    wobble,
 				Timestamp: timestamp.Unix() * 1000, // Convert to milliseconds
@@ -252,6 +428,8 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 }
 
 func main() {
+	loadDotEnvFiles()
+
 	dbUrl := os.Getenv("DATABASE_URL")
 	if dbUrl == "" {
 		log.Println("DATABASE_URL not set, DB features might fail if they require it")
@@ -262,6 +440,12 @@ func main() {
 	db, err := sql.Open("postgres", dbUrl)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		log.Fatalf("database ping failed: %v", err)
 	}
 
 	r := gin.Default()
@@ -278,7 +462,7 @@ func main() {
 		if origin != "" && allowedOrigins[origin] {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
-			c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Content-Type, X-User-ID, Authorization")
 			c.Header("Access-Control-Allow-Credentials", "true")
 		}
@@ -298,15 +482,47 @@ func main() {
 		c.Next()
 	})
 
-	// Auth middleware mock - In production, integrate with your actual auth system
+	jwtSecret := os.Getenv("JWT_SECRET")
+	allowInsecureUserID := strings.EqualFold(os.Getenv("ALLOW_INSECURE_X_USER_ID"), "true")
+
+	// Auth middleware for Bearer JWT with optional local insecure fallback
 	authMiddleware := func(c *gin.Context) {
-		// Extract user ID from JWT or session - for now using a default for testing
-		userID := c.GetHeader("X-User-ID")
-		if userID == "" {
-			userID = "test-user" // Remove this in production
+		authHeader := c.GetHeader("Authorization")
+		if authHeader != "" {
+			if jwtSecret == "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "JWT authentication is not configured"})
+				return
+			}
+
+			claims, err := parseAndVerifyBearerToken(authHeader, jwtSecret)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
+				return
+			}
+
+			userID := extractUserIDFromClaims(claims)
+			if strings.TrimSpace(userID) == "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token missing user identifier"})
+				return
+			}
+
+			c.Set("userID", userID)
+			c.Next()
+			return
 		}
-		c.Set("userID", userID)
-		c.Next()
+
+		if allowInsecureUserID {
+			userID := strings.TrimSpace(c.GetHeader("X-User-ID"))
+			if userID == "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing X-User-ID in insecure mode"})
+				return
+			}
+			c.Set("userID", userID)
+			c.Next()
+			return
+		}
+
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
 	}
 
 	// REST API Routes for Sessions
@@ -324,14 +540,16 @@ func main() {
 		api.DELETE("/discs/:id", DeleteDisc(db))
 
 		// Throw management
+		api.GET("/throws", ListThrows(db))
 		api.POST("/throws", SaveThrow(db))
+		api.DELETE("/throws/:id", DeleteThrow(db))
 
 		// User settings
 		api.GET("/user/settings", GetUserSettings(db))
 		api.PATCH("/user/settings", UpdateUserSettings(db))
 
 		// Telemetry endpoints
-		api.POST("/telemetry", ProcessTelemetry(db))
+		api.POST("/telemetry/upload", ProcessTelemetry(db))
 		api.GET("/telemetry", GetTelemetry(db))
 	}
 
