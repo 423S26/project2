@@ -329,19 +329,35 @@ export class ProtoEncoder {
 
         if (encoded) {
           try {
-            // Field tag: (fieldNumber << 3) | wireType
-            // wireType 2 = length-delimited (for strings and embedded messages)
-            const tag = (fieldNumber << 3) | 2;
+            // Choose the correct protobuf wire type:
+            //   0 = varint  (int32, int64, bool, enum)
+            //   1 = 64-bit  (double, fixed64)
+            //   2 = length-delimited (string, bytes, embedded messages, packed arrays)
+            let wireType: number;
+            if (typeof value === 'boolean') {
+              wireType = 0;
+            } else if (typeof value === 'number') {
+              wireType = Number.isInteger(value) ? 0 : 1;
+            } else {
+              wireType = 2;
+            }
+
+            const tag = (fieldNumber << 3) | wireType;
             assert(tag >= 0, 'Field tag must be non-negative');
-            
+
             const tagBytes = this.encodeVarint(tag);
-            const lengthBytes = this.encodeVarint(encoded.length);
-            
             assert(tagBytes.length > 0, 'Tag encoding produced empty array');
-            assert(lengthBytes.length > 0, 'Length encoding produced empty array');
-            
+
             parts.push(tagBytes);
-            parts.push(lengthBytes);
+
+            if (wireType === 2) {
+              // Length-delimited: prefix with byte count
+              const lengthBytes = this.encodeVarint(encoded.length);
+              assert(lengthBytes.length > 0, 'Length encoding produced empty array');
+              parts.push(lengthBytes);
+            }
+            // wireType 0 (varint) and wireType 1 (64-bit) carry their own length implicitly
+
             parts.push(encoded);
           } catch (tagError) {
             throw new ProtoBufferError(`Failed to encode tag/length for field '${key}'`, {

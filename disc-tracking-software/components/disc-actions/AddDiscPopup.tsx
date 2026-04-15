@@ -1,13 +1,10 @@
 // components/disc-actions/AddDiscPopup.tsx
-'use client';
 
 type AddDiscPopupProps = {
-  trackingNumber: string;
   discName: string;
   discType: string;
   weight: number;
   color: string;
-  onChangeTrackingNumber: (value: string) => void;
   onChangeDiscName: (value: string) => void;
   onChangeDiscType: (value: string) => void;
   onChangeWeight: (value: number) => void;
@@ -18,12 +15,10 @@ type AddDiscPopupProps = {
 };
 
 export default function AddDiscPopup({
-  trackingNumber,
   discName,
   discType,
   weight,
   color,
-  onChangeTrackingNumber,
   onChangeDiscName,
   onChangeDiscType,
   onChangeWeight,
@@ -42,20 +37,6 @@ export default function AddDiscPopup({
           <h3 className="text-lg font-semibold text-white mb-4">Add New Tracker Disc</h3>
 
           <div className="space-y-4">
-            {/* Tracking Number (MAC Address) */}
-            <div>
-              <label className="block text-sm text-white/80 mb-2">
-                Tracking Number (MAC Address)
-              </label>
-              <input
-                type="text"
-                value={trackingNumber}
-                onChange={(e) => onChangeTrackingNumber(e.target.value)}
-                placeholder="e.g. C000123456789ABC"
-                className="w-full px-4 py-3 bg-[#190f2A] border border-[#456fb6]/60 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#54c4c3] focus:ring-2 focus:ring-[#54c4c3]/40"
-              />
-            </div>
-
             {/* Disc Name */}
             <div>
               <label className="block text-sm text-white/80 mb-2">

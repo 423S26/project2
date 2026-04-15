@@ -3,6 +3,7 @@
 // All requests are made to http://localhost:8080/api/v1
 
 import { ProtoEncoder, ProtoDecoder } from './pb/codec';
+import { getClientAuthHeaders } from './auth-headers';
 import {
   APIConnectionError,
   retryWithBackoff,
@@ -68,37 +69,18 @@ export interface ThrowRecord {
 }
 
 // Helper function to get auth headers with validation
-function getAuthHeaders(): HeadersInit {
-  const headers: HeadersInit = {
+async function getAuthHeaders(): Promise<HeadersInit> {
+  const headers: Record<string, string> = {
     "Content-Type": "application/protobuf",
     "Accept": "application/protobuf",
   };
 
-  // In SSR or pre-auth states, send base headers and let the backend decide auth.
-  if (typeof window === 'undefined') {
-    return headers;
-  }
-
   try {
-    const token =
-      localStorage.getItem("authToken") ||
-      localStorage.getItem("jwtToken") ||
-      localStorage.getItem("accessToken");
-
-    if (token && token.trim().length > 0) {
-      (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
-      return headers;
-    }
-
-    const userId = localStorage.getItem("userId");
-    if (userId && userId.trim().length > 0) {
-      (headers as Record<string, string>)["X-User-ID"] = userId;
-    }
+    return await getClientAuthHeaders(headers);
   } catch (error) {
     logError(error instanceof Error ? error : new Error(String(error)), 'getAuthHeaders');
+    return headers;
   }
-
-  return headers;
 }
 
 // Helper function with timeout wrapper
@@ -166,7 +148,7 @@ async function apiCallProtobuf<T>(
 
     const options: RequestInit = {
       method,
-      headers: getAuthHeaders(),
+      headers: await getAuthHeaders(),
     };
 
     if (body) {
@@ -190,7 +172,7 @@ async function apiCallProtobuf<T>(
               if (data.byteLength > 0) {
                 const decoder = new ProtoDecoder(new Uint8Array(data));
                 const errorMsg = decoder.decodeMessage();
-                errorMessage = errorMsg.error || errorMessage;
+                errorMessage = errorMsg.field_1 || errorMsg.error || errorMessage;
               }
             } else if (contentType?.includes("json")) {
               const errorData = await resp.json();
@@ -225,12 +207,8 @@ async function apiCallProtobuf<T>(
     const contentType = response.headers.get("content-type");
     if (contentType?.includes("protobuf")) {
       const arrayBuffer = await response.arrayBuffer();
-      
-      assert(arrayBuffer.byteLength > 0, 'Response body is empty', {
-        endpoint,
-        method,
-      });
-
+      // Empty protobuf payloads are valid for messages with only default values
+      // (e.g., list responses with zero items).
       return new Uint8Array(arrayBuffer) as unknown as T;
     } else if (contentType?.includes("json")) {
       // Fallback to JSON if not protobuf
@@ -478,17 +456,41 @@ function decodeThrowList(data: Uint8Array): ThrowRecord[] {
 }
 
 // Convert decoded proto response to frontend Disc
-function decodeDisc(decoder: ProtoDecoder): Disc {
-  return {
-    id: decoder.decodeString(),
-    user_id: decoder.decodeString(),
-    name: decoder.decodeString(),
-    type: decoder.decodeString(),
+// DiscResponse fields: id=1, user_id=2, name=3, type=4, weight=5, color=6, created_at=7
+function decodeDisc(data: Uint8Array): Disc {
+  const decoder = new ProtoDecoder(data);
+  const disc: Disc = {
+    id: '',
+    user_id: '',
+    name: '',
+    type: '',
     weight: 0,
-    color: decoder.decodeString(),
-    connectionNumber: decoder.decodeString(), // assuming it's added to proto
-    created_at: new Date().toISOString(),
+    color: '',
+    created_at: '',
   };
+
+  while (decoder.getOffset() < data.length) {
+    const tag = decoder.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    switch (fieldNumber) {
+      case 1: disc.id = decoder.decodeString(); break;
+      case 2: disc.user_id = decoder.decodeString(); break;
+      case 3: disc.name = decoder.decodeString(); break;
+      case 4: disc.type = decoder.decodeString(); break;
+      case 5: disc.weight = decoder.decodeVarint(); break;
+      case 6: disc.color = decoder.decodeString(); break;
+      case 7: disc.created_at = decodeProtoTimestamp(decoder); break;
+      default: skipUnknownField(decoder, wireType); break;
+    }
+  }
+
+  if (!disc.created_at) {
+    disc.created_at = new Date().toISOString();
+  }
+
+  return disc;
 }
 
 // Session API
@@ -564,10 +566,17 @@ export const discAPI = {
 
       try {
         while (decoder.getOffset() < response.length) {
-          const tagValue = response[decoder.getOffset()];
-          if (!tagValue) break;
-          
-          discs.push(decodeDisc(decoder));
+          const tag = decoder.decodeVarint();
+          const wireType = tag & 0x07;
+          const fieldNumber = tag >>> 3;
+
+          if (fieldNumber === 1 && wireType === 2) {
+            const discLength = decoder.decodeVarint();
+            const discBytes = decoder.readBytes(discLength);
+            discs.push(decodeDisc(discBytes));
+          } else {
+            skipUnknownField(decoder, wireType);
+          }
         }
       } catch (decodeError) {
         if (discs.length > 0 && typeof window === 'undefined') {
@@ -609,7 +618,6 @@ export const discAPI = {
         type,
         weight,
         color,
-        connectionNumber,
       });
 
       const response = await apiCallProtobuf<Uint8Array>(
@@ -618,8 +626,7 @@ export const discAPI = {
         "POST"
       );
 
-      const decoder = new ProtoDecoder(response);
-      return decodeDisc(decoder);
+      return decodeDisc(response);
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'discAPI.createDisc');
       throw error;

@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { ProtoDecoder } from '@/lib/pb/codec';
+import { getClientAuthHeaders } from '@/lib/auth-headers';
 import { FirmwareConnectionError, ConnectionMonitor, logError } from '@/lib/errors';
 import { toast } from 'sonner';
 import { useDevice } from '@/contexts/DeviceContext';
@@ -77,35 +78,19 @@ export default function LiveTracker({
 		}
 	};
 
-	const getAuthHeaders = (): Record<string, string> => {
-		const headers: Record<string, string> = {
+	const getAuthHeaders = async (): Promise<Record<string, string>> => {
+		return getClientAuthHeaders({
 			'Content-Type': 'application/protobuf',
-		};
-
-		const token =
-			localStorage.getItem('authToken') ||
-			localStorage.getItem('jwtToken') ||
-			localStorage.getItem('accessToken');
-
-		if (token && token.trim().length > 0) {
-			headers.Authorization = `Bearer ${token}`;
-			return headers;
-		}
-
-		const userId = localStorage.getItem('userId');
-		if (userId && userId.trim().length > 0) {
-			headers['X-User-ID'] = userId;
-		}
-
-		return headers;
+		});
 	};
 
 	const fetchTelemetry = async () => {
 		if (!connectedDevice?.deviceId) return;
 
 		try {
+			const headers = await getAuthHeaders();
 			const response = await fetch(`${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(connectedDevice.deviceId)}`, {
-				headers: getAuthHeaders(),
+				headers,
 			});
 
 			if (!response.ok) {

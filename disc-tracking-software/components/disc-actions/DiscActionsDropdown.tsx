@@ -40,7 +40,6 @@ export default function DiscActionsDropdown({
   const [trackerDistance, setTrackerDistance] = useState<number | null>(null);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [showAddPopup, setShowAddPopup] = useState(false);
-  const [trackingNumber, setTrackingNumber] = useState('');
   const [discName, setDiscName] = useState('');
   const [discType, setDiscType] = useState('');
   const [weight, setWeight] = useState(175);
@@ -96,16 +95,27 @@ export default function DiscActionsDropdown({
   const handleSync = async () => {
     if (!selectedDisc) return;
 
-    if (selectedDisc.connectionNumber && selectedDisc.connectionNumber.length !== 17) {
-      toast.error('Device MAC address must be exactly 17 characters. Please check the tracking number.');
-      setSyncStatus('error');
-      return;
-    }
-
     setSyncStatus('idle');
     bleManager.disconnect();
 
     try {
+      const ensureResponse = await fetch('/api/go/ensure-running', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!ensureResponse.ok) {
+        let message = 'Unable to start backend service automatically.';
+        try {
+          const payload = await ensureResponse.json();
+          if (payload?.error) {
+            message = String(payload.error);
+          }
+        } catch {
+          // Keep default message when response is not JSON.
+        }
+        throw new Error(message);
+      }
+
       // Connect to hardware using Web Bluetooth
       await bleManager.connect(selectedDisc.connectionNumber || selectedDisc.id);
       
@@ -148,7 +158,6 @@ export default function DiscActionsDropdown({
 
   const openAddPopup = () => {
     setShowAddPopup(true);
-    setTrackingNumber('');
     setDiscName('');
     setDiscType('');
     setWeight(175);
@@ -168,7 +177,6 @@ export default function DiscActionsDropdown({
         discType.trim(),
         weight,
         color,
-        trackingNumber.trim() || undefined // connectionNumber
       );
       setDiscs([...discs, newDisc]);
       setShowAddPopup(false);
@@ -295,11 +303,6 @@ export default function DiscActionsDropdown({
 
       {syncStatus === 'success' && trackerDistance !== null && (
         <>
-          {selectedDisc?.connectionNumber && (
-            <div className="text-xs text-white/60 mb-3 font-mono">
-              MAC: {selectedDisc.connectionNumber}
-            </div>
-          )}
           <TrackerDisplay
             distance={trackerDistance}
             unit={settings.distanceUnit}
@@ -349,12 +352,10 @@ export default function DiscActionsDropdown({
 
       {showAddPopup && (
         <AddDiscPopup
-          trackingNumber={trackingNumber}
           discName={discName}
           discType={discType}
           weight={weight}
           color={color}
-          onChangeTrackingNumber={setTrackingNumber}
           onChangeDiscName={setDiscName}
           onChangeDiscType={setDiscType}
           onChangeWeight={setWeight}

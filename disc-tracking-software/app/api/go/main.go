@@ -72,6 +72,10 @@ var (
 type AuthClaims struct {
 	Sub    string `json:"sub"`
 	UserID string `json:"user_id"`
+	Exp    int64  `json:"exp"`
+	Iat    int64  `json:"iat"`
+	Iss    string `json:"iss"`
+	Aud    string `json:"aud"`
 }
 
 //------------------------------------------
@@ -197,6 +201,13 @@ func parseAndVerifyBearerToken(authHeader string, jwtSecret string) (*AuthClaims
 	var claims AuthClaims
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 		return nil, fmt.Errorf("invalid JWT payload JSON: %w", err)
+	}
+
+	if claims.Exp > 0 {
+		now := time.Now().Unix()
+		if now >= claims.Exp {
+			return nil, errors.New("token expired")
+		}
 	}
 
 	return &claims, nil
@@ -490,19 +501,19 @@ func main() {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			if jwtSecret == "" {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "JWT authentication is not configured"})
+				sendProtobufError(c, http.StatusUnauthorized, "JWT authentication is not configured")
 				return
 			}
 
 			claims, err := parseAndVerifyBearerToken(authHeader, jwtSecret)
 			if err != nil {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
+				sendProtobufError(c, http.StatusUnauthorized, "invalid bearer token")
 				return
 			}
 
 			userID := extractUserIDFromClaims(claims)
 			if strings.TrimSpace(userID) == "" {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token missing user identifier"})
+				sendProtobufError(c, http.StatusUnauthorized, "token missing user identifier")
 				return
 			}
 
@@ -514,7 +525,7 @@ func main() {
 		if allowInsecureUserID {
 			userID := strings.TrimSpace(c.GetHeader("X-User-ID"))
 			if userID == "" {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing X-User-ID in insecure mode"})
+				sendProtobufError(c, http.StatusUnauthorized, "missing X-User-ID in insecure mode")
 				return
 			}
 			c.Set("userID", userID)
@@ -522,7 +533,7 @@ func main() {
 			return
 		}
 
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+		sendProtobufError(c, http.StatusUnauthorized, "missing bearer token")
 	}
 
 	// REST API Routes for Sessions

@@ -30,6 +30,7 @@ export default function DashboardHome() {
   const [showStatisticsOverlay, setShowStatisticsOverlay] = useState(false);
   const [userDiscs, setUserDiscs] = useState<Disc[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [backendStatus, setBackendStatus] = useState<'starting' | 'ready' | 'failed'>('starting');
   const { disconnectDevice, connectedDevice } = useDevice();
 
   const getErrorMessage = (error: unknown, fallback: string): string => {
@@ -47,16 +48,35 @@ export default function DashboardHome() {
   };
 
   useEffect(() => {
-    // Fetch user name
+    // Fetch user name (no backend required)
     getUserNameAction().then((name) => {
       if (name) setUserName(name);
     });
 
-    // Fetch active sessions on mount
-    loadActiveSessions();
-    
-    // Fetch user discs
-    loadUserDiscs();
+    // Ensure Go backend is running before attempting any API calls
+    const initBackend = async () => {
+      try {
+        const res = await fetch('/api/go/ensure-running', {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (!res.ok) {
+          const payload = await res.json().catch(() => ({}));
+          const detail = payload?.error ?? 'Unknown error starting backend service.';
+          toast.error(`Backend service unavailable: ${detail}`);
+          setBackendStatus('failed');
+          return;
+        }
+        setBackendStatus('ready');
+        // Now safe to load data that requires the Go backend
+        await Promise.all([loadActiveSessions(), loadUserDiscs()]);
+      } catch {
+        toast.error('Could not reach the backend service. Please check server configuration.');
+        setBackendStatus('failed');
+      }
+    };
+
+    initBackend();
   }, []);
 
   const loadActiveSessions = async () => {
@@ -140,6 +160,20 @@ export default function DashboardHome() {
               Select and sync your disc(s) to start tracking.
             </p>
 
+            {/* Backend service status indicator */}
+            {backendStatus === 'starting' && (
+              <div className="inline-flex items-center gap-2 text-sm text-yellow-300/80 bg-yellow-900/20 border border-yellow-500/30 rounded-lg px-4 py-2 mb-8">
+                <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+                Starting backend service&hellip;
+              </div>
+            )}
+            {backendStatus === 'failed' && (
+              <div className="inline-flex items-center gap-2 text-sm text-red-300/80 bg-red-900/20 border border-red-500/30 rounded-lg px-4 py-2 mb-8">
+                <span className="inline-block w-2 h-2 rounded-full bg-red-400" />
+                Backend service unavailable &mdash; some features may not work
+              </div>
+            )}
+
             {/* Disc Actions Dropdown – only shown during active session */}
             {activeSession && (
               <div className="flex justify-center mb-10">
@@ -178,7 +212,7 @@ export default function DashboardHome() {
                     bg-[#54c4c3] hover:bg-[#3daaa9] text-black
                     rounded-xl transition-all duration-300 shadow-lg
                     hover:shadow-xl hover:scale-105 focus:outline-none
-                    focus:ring-2 focus:ring-[#54c4c3]/50 text-center
+                    focus:ring-2 focus:ring-[#54c4c3]/50 text-center cursor-pointer
                   "
                 >
                   Start Tracking Session
@@ -239,7 +273,6 @@ export default function DashboardHome() {
               />
               {!connectedDevice ? (
                 <div className="text-sm text-yellow-300 mb-4">
-                  No disc connected yet. You can still start a session, then select and sync a disc from the tracker view.
                 </div>
               ) : (
                 <div className="text-sm text-green-300 mb-4">

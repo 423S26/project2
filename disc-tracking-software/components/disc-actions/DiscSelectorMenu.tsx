@@ -1,5 +1,4 @@
 // components/disc-actions/DiscSelectorMenu.tsx
-'use client';
 
 import { Disc } from './types';
 
@@ -106,13 +105,7 @@ export default function DiscSelectorMenu({
             }`}
             disabled={!selectedDisc}
             onClick={() => {
-              // TODO (Backend): Replace fake sync with real hardware connection
-              // Example:
-              // 1. Connect via Bluetooth and start telemetry upload flow using selectedDisc.connectionNumber
-              // 2. Request current distance from device
-              // 3. Update parent state: setTrackerDistance(realDistance)
-              // 4. Set syncStatus('success') or 'error'
-              // 5. Optional: POST /api/sync-logs { discId, timestamp, distance }
+              // Opens native BLE device picker → connects to tracker → streams telemetry to Go server
               onSync();
             }}
           >
@@ -154,10 +147,7 @@ export default function DiscSelectorMenu({
             </svg>
             Add New Tracker Disc
           </button>
-          {/* TODO (Backend): onOpenAddPopup → opens AddDiscPopup */}
-          {/* In AddDiscPopup: POST /api/discs with { name, connectionNumber(if applicable) } */}
           {/* On success: close popup, refresh disc list (re-fetch or append new disc to currentDiscs) */}
-          {/* Handle errors (e.g. duplicate connection number) and show feedback in popup */}
           {/* later feature to add is flight predictions which can be used to compare the disc's trajectory to actual throw - not part of this version for the capstone but a continued update*/}
           {/* Remove Disc */}
           {selectedDisc && (

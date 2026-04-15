@@ -1,4 +1,5 @@
 import { encodeMessage, decodePing, PingData } from './pb/codec';
+import { getClientAuthHeaders } from './auth-headers';
 import { FirmwareConnectionError, logError } from './errors';
 
 const TRACKER_SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
@@ -195,9 +196,10 @@ export class BLEManager {
     const payload = encodeMessage({ pings });
     const requestBody = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer;
 
+    const authHeaders = await this.getAuthHeaders();
     const response = await fetch(`${this.API_BASE_URL}/api/v1/telemetry/upload`, {
       method: 'POST',
-      headers: this.getAuthHeaders(),
+      headers: authHeaders,
       body: requestBody,
     });
 
@@ -206,28 +208,13 @@ export class BLEManager {
     }
   }
 
-  private getAuthHeaders(): HeadersInit {
+  private async getAuthHeaders(): Promise<HeadersInit> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/protobuf',
       'Accept': 'application/json',
     };
 
-    const token =
-      localStorage.getItem('authToken') ||
-      localStorage.getItem('jwtToken') ||
-      localStorage.getItem('accessToken');
-
-    if (token && token.trim().length > 0) {
-      headers.Authorization = `Bearer ${token}`;
-      return headers;
-    }
-
-    const userId = localStorage.getItem('userId');
-    if (userId && userId.trim().length > 0) {
-      headers['X-User-ID'] = userId;
-    }
-
-    return headers;
+    return getClientAuthHeaders(headers);
   }
 
   private loadPendingBatches(): PingData[][] {

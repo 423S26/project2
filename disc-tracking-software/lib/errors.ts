@@ -154,7 +154,14 @@ export async function retryWithBackoff<T>(
       return await operation();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      
+
+      // 4xx errors are client errors – retrying will never help
+      if (lastError instanceof APIConnectionError &&
+          lastError.statusCode !== undefined &&
+          lastError.statusCode >= 400 && lastError.statusCode < 500) {
+        break;
+      }
+
       if (attempt < maxRetries - 1) {
         // Exponential backoff with jitter
         const delay = Math.min(
