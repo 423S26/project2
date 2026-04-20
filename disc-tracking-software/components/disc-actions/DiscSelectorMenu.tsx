@@ -12,7 +12,7 @@ import { Disc } from './types';
 
 type Props = {
   isOpen: boolean;
-  currentDiscs: Disc[];                    // TODO (Backend): This should come from server-fetched data
+  currentDiscs: Disc[];
   selectedDisc: Disc | null;
   showDiscList: boolean;
   syncStatus: 'idle' | 'success' | 'error';
@@ -76,9 +76,6 @@ export default function DiscSelectorMenu({
             {/* Disc List – drops down below selector */}
             {showDiscList && (
               <div className="mt-1 w-full bg-[#190f2A] border border-[#456fb6]/60 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                {/* TODO (Backend): Replace static currentDiscs with real fetched data */}
-                {/* Fetch: GET /api/discs (user's tracked discs) */}
-                {/* On select: PATCH /api/user/active-disc or store in session */}
                 {currentDiscs.length > 0 ? (
                   currentDiscs.map((disc) => (
                     <button
@@ -154,9 +151,6 @@ export default function DiscSelectorMenu({
             <button
               className="w-full text-left px-6 py-4 text-base text-red-300 hover:bg-red-900/20 hover:text-red-200 transition flex items-center gap-4 rounded-lg"
               onClick={() => {
-                // TODO (Backend): Trigger DELETE /api/discs/{selectedDisc.id}
-                // On click: show confirmation (e.g. RemoveConfirmPopup) → if confirmed, call onRemoveDisc()
-                // After success: onRemoveDisc() → parent removes from list & clears selectedDisc
                 onRemoveDisc();
               }}
             >

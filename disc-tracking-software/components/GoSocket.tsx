@@ -1,19 +1,12 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from 'recharts';
 import { ProtoDecoder } from '@/lib/pb/codec';
 import { getClientAuthHeaders } from '@/lib/auth-headers';
 import { FirmwareConnectionError, ConnectionMonitor, logError } from '@/lib/errors';
 import { toast } from 'sonner';
 import { useDevice } from '@/contexts/DeviceContext';
+import { useSettings } from '@/contexts/SettingsContext';
+import { pipelineLog } from '@/lib/ble';
 
 const statusColors = {
 	"IDLE": "bg-gray-500",
@@ -41,17 +34,15 @@ type LiveTrackerProps = {
   deviceId?: string;
   activeSessionId?: string;
   onTelemetryAction?: (data: TelemetryData) => void;
-  maxHistoryLength?: number;
 };
 
 export default function LiveTracker({
   activeSessionId,
   onTelemetryAction,
-  maxHistoryLength = 40,
 }: LiveTrackerProps) {
 	const { connectedDevice } = useDevice();
+	const { settings } = useSettings();
 	const [lastPing, setLastPing] = useState<TelemetryData | null>(null);
-	const [history, setHistory] = useState<TelemetryData[]>([]);
 	const [connectionState, setConnectionState] = useState<ConnectionState>({
 		connected: false,
 		healthy: false,
@@ -89,11 +80,13 @@ export default function LiveTracker({
 
 		try {
 			const headers = await getAuthHeaders();
-			const response = await fetch(`${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(connectedDevice.deviceId)}`, {
+			const url = `${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(connectedDevice.deviceId)}`;
+			const response = await fetch(url, {
 				headers,
 			});
 
 			if (!response.ok) {
+				pipelineLog('GIN:HTTP', 'error', `${response.status} ${response.statusText}`);
 				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 			}
 
@@ -102,6 +95,15 @@ export default function LiveTracker({
 
 			// Decode the GetTelemetryResponse protobuf
 			const telemetryUpdates = decodeTelemetryResponse(data);
+
+			// Only log when we actually received records
+			if (telemetryUpdates.length > 0) {
+				const latest = telemetryUpdates[telemetryUpdates.length - 1];
+				pipelineLog(
+					'API:RES', 'info',
+					`${telemetryUpdates.length} record(s) ${data.length}B — lat=${latest.lat.toFixed(6)} lon=${latest.lon.toFixed(6)} rpm=${latest.rpm.toFixed(0)}`,
+				);
+			}
 
 			if (telemetryUpdates.length > 0) {
 				// Use the most recent telemetry update
@@ -116,10 +118,6 @@ export default function LiveTracker({
 				};
 
 				setLastPing(telemetryData);
-				setHistory((prev) => {
-					const next = [...prev, telemetryData];
-					return next.slice(-maxHistoryLength);
-				});
 				onTelemetryAction?.(telemetryData);
 
 				setConnectionState({
@@ -142,16 +140,18 @@ export default function LiveTracker({
 			}
 		} catch (error) {
 			const err = error instanceof Error ? error : new Error(String(error));
+			pipelineLog('API:RES', 'warn', `Telemetry fetch: ${err.message}`);
 			setConnectionState(prev => ({
 				...prev,
 				healthy: false,
 				lastError: err.message,
 			}));
-			showToastOnce('Failed to fetch telemetry data. Retrying...');
 		}
 	};
 
 	const decodeTelemetryResponse = (data: Uint8Array): any[] => {
+		if (!data || data.length === 0) return [];
+
 		try {
 			const decoder = new ProtoDecoder(data);
 			const telemetryUpdates: any[] = [];
@@ -161,80 +161,70 @@ export default function LiveTracker({
 				const wireType = tag & 0x07;
 				const fieldNumber = tag >>> 3;
 
-				if (fieldNumber === 1 && wireType === 2) { // telemetry field (repeated)
+				if (fieldNumber === 1 && wireType === 2) {
+					// field 1 = repeated TelemetryUpdate (length-delimited sub-message)
 					const length = decoder.decodeVarint();
 					const endOffset = decoder.getOffset() + length;
 
+					let deviceId = '';
+					let lat = 0;
+					let lon = 0;
+					let alt = 0;
+					let rpm = 0;
+					let wobble = 0;
+					let timestamp = 0;
+
 					while (decoder.getOffset() < endOffset) {
-						const telemetryTag = decoder.decodeVarint();
-						const telemetryWireType = telemetryTag & 0x07;
-						const telemetryFieldNumber = telemetryTag >>> 3;
+						const innerTag = decoder.decodeVarint();
+						const innerWireType = innerTag & 0x07;
+						const innerFieldNumber = innerTag >>> 3;
 
-						let deviceId = '';
-						let lat = 0;
-						let lon = 0;
-						let alt = 0;
-						let rpm = 0;
-						let wobble = 0;
-						let timestamp = 0;
-
-						if (telemetryWireType === 2) { // nested message
-							const telemetryLength = decoder.decodeVarint();
-							const telemetryEndOffset = decoder.getOffset() + telemetryLength;
-
-							while (decoder.getOffset() < telemetryEndOffset) {
-								const innerTag = decoder.decodeVarint();
-								const innerWireType = innerTag & 0x07;
-								const innerFieldNumber = innerTag >>> 3;
-
-								if (innerFieldNumber === 1) deviceId = decoder.decodeString();
-								else if (innerFieldNumber === 2) lat = decoder.decodeDouble();
-								else if (innerFieldNumber === 3) lon = decoder.decodeDouble();
-								else if (innerFieldNumber === 4) alt = decoder.decodeDouble();
-								else if (innerFieldNumber === 5) rpm = decoder.decodeDouble();
-								else if (innerFieldNumber === 6) wobble = decoder.decodeDouble();
-								else if (innerFieldNumber === 7) timestamp = decoder.decodeVarint();
-								else {
-									// Skip unknown fields
-									if (innerWireType === 2) {
-										const skipLength = decoder.decodeVarint();
-										decoder.readBytes(skipLength);
-									} else if (innerWireType === 0) decoder.decodeVarint();
-									else if (innerWireType === 1) decoder.readBytes(8);
-									else if (innerWireType === 5) decoder.readBytes(4);
-								}
-							}
-
-							telemetryUpdates.push({
-								deviceId,
-								lat,
-								lon,
-								alt,
-								rpm,
-								wobble,
-								timestamp,
-							});
+						if (innerFieldNumber === 1 && innerWireType === 2) deviceId = decoder.decodeString();
+						else if (innerFieldNumber === 2 && innerWireType === 1) lat = decoder.decodeDouble();
+						else if (innerFieldNumber === 3 && innerWireType === 1) lon = decoder.decodeDouble();
+						else if (innerFieldNumber === 4 && innerWireType === 1) alt = decoder.decodeDouble();
+						else if (innerFieldNumber === 5 && innerWireType === 1) rpm = decoder.decodeDouble();
+						else if (innerFieldNumber === 6 && innerWireType === 1) wobble = decoder.decodeDouble();
+						else if (innerFieldNumber === 7 && innerWireType === 0) timestamp = decoder.decodeVarint();
+						else {
+							// Skip unknown fields by wire type
+							if (innerWireType === 2) {
+								const skipLen = decoder.decodeVarint();
+								decoder.readBytes(skipLen);
+							} else if (innerWireType === 0) decoder.decodeVarint();
+							else if (innerWireType === 1) decoder.readBytes(8);
+							else if (innerWireType === 5) decoder.readBytes(4);
+							else break; // unknown wire type, bail out of this entry
 						}
 					}
+
+					telemetryUpdates.push({
+						deviceId,
+						lat,
+						lon,
+						alt,
+						rpm,
+						wobble,
+						timestamp,
+					});
 				} else {
-					// Skip unknown fields
+					// Skip unknown top-level fields
 					if (wireType === 2) {
-						const skipLength = decoder.decodeVarint();
-						decoder.readBytes(skipLength);
+						const skipLen = decoder.decodeVarint();
+						decoder.readBytes(skipLen);
 					} else if (wireType === 0) decoder.decodeVarint();
 					else if (wireType === 1) decoder.readBytes(8);
 					else if (wireType === 5) decoder.readBytes(4);
+					else break; // unknown wire type at top level
 				}
 			}
 
 			return telemetryUpdates;
 		} catch (error) {
+			// Log decode failure to pipeline but don't throw — return empty
 			const err = error instanceof Error ? error : new Error(String(error));
-			throw new FirmwareConnectionError(
-				`Failed to decode GetTelemetryResponse: ${err.message}`,
-				undefined,
-				{dataLength: data.length}
-			);
+			pipelineLog('API:DECODE', 'warn', `Decode skipped (${data.length}B): ${err.message}`);
+			return [];
 		}
 	};
 
@@ -245,7 +235,6 @@ export default function LiveTracker({
 				clearInterval(pollIntervalRef.current);
 				pollIntervalRef.current = null;
 			}
-			setHistory([]);
 			setLastPing(null);
 			setConnectionState({
 				connected: false,
@@ -256,7 +245,6 @@ export default function LiveTracker({
 		}
 
 		// Start polling when device and session are available
-		setHistory([]);
 		setLastPing(null);
 		setConnectionState({
 			connected: false,
@@ -286,6 +274,8 @@ export default function LiveTracker({
 
 	return (
 		<div className="text-white p-4 space-y-2 bg-slate-900 rounded">
+			{settings.showDebugConsole && (
+			<>
 			<div className="text-sm font-bold">{connectedDevice.discName} Telemetry</div>
 
 			{/* Connection Status */}
@@ -318,31 +308,7 @@ export default function LiveTracker({
 					<div>Wobble: {lastPing.wobble.toFixed(3)} g</div>
 				</div>
 			)}
-
-			{/* Recharts Live Stats */}
-			{history.length > 0 && (
-				<div className="bg-slate-800 p-2 rounded">
-					<div className="text-sm font-bold mb-2">Live Telemetry History</div>
-					<ResponsiveContainer width="100%" height={200}>
-						<LineChart data={history}>
-							<CartesianGrid strokeDasharray="3 3" />
-							<XAxis
-								dataKey="received_at"
-								type="number"
-								scale="time"
-								domain={['dataMin', 'dataMax']}
-								tickFormatter={(tick) => new Date(tick).toLocaleTimeString()}
-							/>
-							<YAxis />
-							<Tooltip
-								labelFormatter={(label) => new Date(label).toLocaleTimeString()}
-								formatter={(value: any, name: any) => [typeof value === 'number' ? value.toFixed(2) : 'N/A', name || 'Unknown']}
-							/>
-							<Line type="monotone" dataKey="rpm" stroke="#8884d8" name="RPM" />
-							<Line type="monotone" dataKey="wobble" stroke="#82ca9d" name="Wobble (g)" />
-						</LineChart>
-					</ResponsiveContainer>
-				</div>
+			</>
 			)}
 		</div>
 	);

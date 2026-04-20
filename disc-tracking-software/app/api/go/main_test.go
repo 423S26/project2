@@ -68,8 +68,8 @@ func TestCalculateTelemetrySummary(t *testing.T) {
 	alt2 := 15.0
 
 	pings := []*pb.Ping{
-		{DeviceId: "disc-1", Latitude: &lat1, Longitude: &lon1, Altitude: &alt1, AccelX: 5, AccelY: 5},
-		{DeviceId: "disc-1", Latitude: &lat2, Longitude: &lon2, Altitude: &alt2, AccelX: 8, AccelY: 6},
+		{DeviceId: "disc-1", Lat: lat1, Lon: lon1, Alt: alt1, GyroZ: 120},
+		{DeviceId: "disc-1", Lat: lat2, Lon: lon2, Alt: alt2, GyroZ: 180},
 	}
 
 	distanceFt, releaseAngle, maxRPM := calculateTelemetrySummary(pings)

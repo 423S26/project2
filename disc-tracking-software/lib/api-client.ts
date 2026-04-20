@@ -4,6 +4,7 @@
 
 import { ProtoEncoder, ProtoDecoder } from './pb/codec';
 import { getClientAuthHeaders } from './auth-headers';
+import { pipelineLog } from './ble';
 import {
   APIConnectionError,
   retryWithBackoff,
@@ -76,8 +77,10 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   };
 
   try {
+    pipelineLog('AUTH:SESSION', 'info', 'Resolving auth headers');
     return await getClientAuthHeaders(headers);
   } catch (error) {
+    pipelineLog('AUTH:SESSION', 'error', `Auth header failure: ${(error as Error).message}`);
     logError(error instanceof Error ? error : new Error(String(error)), 'getAuthHeaders');
     return headers;
   }
@@ -155,6 +158,8 @@ async function apiCallProtobuf<T>(
       options.body = body as any;
     }
 
+    pipelineLog('API:REQ', 'info', `${method} ${endpoint}${body ? ` (${body.length}B)` : ''}`);
+
     // Wrap in retry logic for transient failures
     const response = await retryWithBackoff(
       async () => {
@@ -196,6 +201,7 @@ async function apiCallProtobuf<T>(
           );
         }
 
+        pipelineLog('GIN:HTTP', 'info', `${resp.status} ${method} ${endpoint}`);
         return resp;
       },
       MAX_RETRIES,
@@ -207,10 +213,16 @@ async function apiCallProtobuf<T>(
     const contentType = response.headers.get("content-type");
     if (contentType?.includes("protobuf")) {
       const arrayBuffer = await response.arrayBuffer();
+      const resBytes = new Uint8Array(arrayBuffer);
+      pipelineLog(
+        'API:RES', 'info',
+        `${arrayBuffer.byteLength}B protobuf ← ${endpoint}`,
+      );
       // Empty protobuf payloads are valid for messages with only default values
       // (e.g., list responses with zero items).
-      return new Uint8Array(arrayBuffer) as unknown as T;
+      return resBytes as unknown as T;
     } else if (contentType?.includes("json")) {
+      pipelineLog('API:RES', 'info', `JSON response ← ${endpoint}`);
       // Fallback to JSON if not protobuf
       return response.json() as Promise<T>;
     } else {
@@ -223,10 +235,12 @@ async function apiCallProtobuf<T>(
     }
   } catch (error) {
     if (error instanceof APIConnectionError) {
+      pipelineLog('API:RES', 'error', `${error.message} ← ${endpoint}`);
       logError(error, 'apiCallProtobuf');
       throw error;
     }
     const err = error instanceof Error ? error : new Error(String(error));
+    pipelineLog('API:RES', 'error', `${err.message} ← ${endpoint}`);
     logError(err, 'apiCallProtobuf');
     throw new APIConnectionError(
       `API call failed: ${err.message}`,

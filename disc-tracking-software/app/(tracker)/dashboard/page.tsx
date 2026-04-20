@@ -5,7 +5,6 @@ import DashboardHeader from '@/components/DashboardHeader';
 import DiscActionsDropdown from '@/components/disc-actions/DiscActionsDropdown';
 import ThrowStatisticsOverlay from '@/components/ThrowStatisticsOverlay';
 import LiveTracker from '@/components/TelemetryLiveTracker';
-import Link from 'next/link';
 import { getUserNameAction } from '@/lib/actions/auth-actions';
 import { sessionAPI, discAPI } from '@/lib/api-client';
 import { toast } from 'sonner';
@@ -220,8 +219,8 @@ export default function DashboardHome() {
               )}
 
               {/* User Throw Statistics button – always visible */}
-              <Link
-                href="/stats"
+              <button
+                onClick={() => setShowStatisticsOverlay(true)}
                 className="
                   w-full max-w-md inline-flex items-center justify-center
                   px-10 py-4 text-lg font-medium text-white
@@ -229,13 +228,11 @@ export default function DashboardHome() {
                   rounded-xl hover:from-[#54c4c3] hover:to-[#456fb6]
                   transition-all duration-300 shadow-lg hover:shadow-xl
                   hover:scale-105 focus:outline-none focus:ring-2
-                  focus:ring-[#54c4c3]/50 text-center
+                  focus:ring-[#54c4c3]/50 text-center cursor-pointer
                 "
               >
                 User Throw Statistics
-              </Link>
-              {/* TODO (Backend): Later link to per-session stats */}
-              {/* e.g. /stats?sessionId={activeSession?.id} */}
+              </button>
             </div>
           </div>
         </section>
@@ -245,9 +242,9 @@ export default function DashboardHome() {
       {showStatisticsOverlay && (
         <ThrowStatisticsOverlay
           isOpen={showStatisticsOverlay}
-          activeSession={activeSession?.id || null} onCloseAction={function (): void {
-            throw new Error('Function not implemented.');
-          } }        />
+          activeSession={activeSession?.id || null}
+          onCloseAction={() => setShowStatisticsOverlay(false)}
+        />
       )}
 
       {/* Start Session Popup */}

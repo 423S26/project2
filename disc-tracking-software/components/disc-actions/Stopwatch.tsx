@@ -111,14 +111,14 @@ export default function Stopwatch({
       <div className="text-center mb-4">
         {isInDelayPhase ? (
           <>
-            <div className="text-4xl md:text-5xl font-mono font-bold text-yellow-400 tracking-tight">
+            <div className="text-4xl md:text-5xl font-mono font-bold text-yellow-400 tracking-tight tabular-nums">
               {formattedTime} <span className="text-xl text-white/70">s</span>
             </div>
             <p className="text-sm text-white/60 mt-1">Delay countdown...</p>
           </>
         ) : (
           <>
-            <div className="text-4xl md:text-5xl font-mono font-bold text-[#54c4c3] tracking-tight">
+            <div className="text-4xl md:text-5xl font-mono font-bold text-[#54c4c3] tracking-tight tabular-nums">
               {formattedTime} <span className="text-xl text-white/70">s</span>
             </div>
             <p className="text-sm text-white/60 mt-1">Time of Flight</p>
@@ -157,7 +157,7 @@ export default function Stopwatch({
       </div>
 
       {/* Controls */}
-      <div className="flex justify-center gap-4">
+      <div className="flex justify-center gap-4 min-h-[48px]">
         {/* Start button – only visible if never started or after full clear */}
         {!isRunning && !hasBeenStarted && (
           <button

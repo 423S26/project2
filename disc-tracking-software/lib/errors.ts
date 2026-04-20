@@ -9,7 +9,7 @@ export class ProtoBufferError extends Error {
     super(`[ProtoBuf] ${message}`);
     this.name = 'ProtoBufferError';
     if (context) {
-      console.error('ProtoBuffer Error Context:', context);
+      console.log('%c[ProtoBuf] Error Context:', 'color:#f87171', context);
     }
   }
 }

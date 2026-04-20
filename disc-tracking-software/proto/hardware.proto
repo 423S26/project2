@@ -5,26 +5,37 @@ package disctracking;
 option go_package = "project2/disc-tracking-software/pb";
 
 // ============ HARDWARE/TELEMETRY MESSAGES ============
+// Field numbers MUST match firmware tracker.proto (nanopb)
 
 message Ping {
   string device_id = 1;
-  int64 timestamp = 2;
-  float accel_x = 3;
-  float accel_y = 4;
-  float accel_z = 5;
-  float gyro_x = 6;
-  float gyro_y = 7;
-  float gyro_z = 8;
-  optional float mag_x = 9;
-  optional float mag_y = 10;
-  optional float mag_z = 11;
-  optional double latitude = 12;
-  optional double longitude = 13;
-  optional double altitude = 14;
-  optional float hdop = 15;
-  optional int32 satellites = 16;
-  int32 battery_percent = 17;
-  int32 signal_strength = 18;
+
+  // Spatial (GPS)
+  double lat = 2;
+  double lon = 3;
+  double alt = 4;
+
+  // Velocity & Environment
+  float speed_mps = 5;
+  float heading = 6;
+  float temp_c = 7;
+
+  // Signal Quality
+  float hdop = 8;
+  int32 sats = 9;
+
+  // Physics: Accelerometer (G-forces)
+  float accel_x = 10;
+  float accel_y = 11;
+  float accel_z = 12;
+
+  // Physics: Gyroscope (degrees/sec)
+  float gyro_x = 13;
+  float gyro_y = 14;
+  float gyro_z = 15;
+
+  int64 timestamp = 16;
+  int32 batt_pct = 17;
 }
 
 message PingBatch {

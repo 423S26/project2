@@ -238,6 +238,25 @@ export default function DashboardHeader() {
                 </div>
               </div>
 
+              {/* Developer Debug Console */}
+              <div className="bg-[#223066]/40 backdrop-blur-sm border border-[#456fb6]/40 rounded-xl p-6">
+                <h3 className="text-lg font-semibold text-white mb-4">Developer</h3>
+                <label className="flex items-center gap-4 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.showDebugConsole}
+                    onChange={(e) => updateSettings({ showDebugConsole: e.target.checked })}
+                    className="toggle toggle-primary toggle-lg"
+                  />
+                  <div>
+                    <span className="text-white/90 font-medium">Debug Console</span>
+                    <p className="text-xs text-white/50 mt-1">
+                      Show the full-stack pipeline log, BLE binary data flow, and telemetry diagnostics.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
               {/* Save button */}
               <div className="pt-8 pb-12">
                 <button

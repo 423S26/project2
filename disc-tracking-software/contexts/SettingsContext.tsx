@@ -17,6 +17,7 @@ export type Settings = {
   throwMode: ThrowMode;
   autoSaveThrows: boolean;
   selectedMetrics: MetricKey[]; // which metrics to show in ThrowResults
+  showDebugConsole: boolean;
 };
 
 // Context shape – exposes current settings and update function
@@ -53,6 +54,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       throwMode: 'manual',
       autoSaveThrows: false,
       selectedMetrics: ['time', 'distance', 'velocity', 'rpm', 'height'] as MetricKey[],
+      showDebugConsole: false,
     };
   });
 

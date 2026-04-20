@@ -83,7 +83,7 @@ type AuthClaims struct {
 func ValidatePing(p *pb.Ping) bool {
 	// HDOP < 2.0 is excellent, > 5.0 is junk.
 	// We ignore anything above 4.0 to prevent "jitter"
-	if p == nil || p.Hdop == nil || p.GetHdop() > 4.0 || p.Satellites == nil || p.GetSatellites() < 5 {
+	if p == nil || p.Hdop > 4.0 || p.Sats < 5 {
 		return false
 	}
 	return true
@@ -97,15 +97,12 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		ST_MakePoint($1, $2), 
 		ST_MakePoint($3, $4)
 	)`
-	if p.Longitude == nil || p.Latitude == nil {
+	if p.Lon == 0 && p.Lat == 0 {
 		return 0, false
 	}
-	db.QueryRow(query, teeLon, teeLat, *p.Longitude, *p.Latitude).Scan(&surfaceDist)
+	db.QueryRow(query, teeLon, teeLat, p.Lon, p.Lat).Scan(&surfaceDist)
 
-	if p.Altitude == nil {
-		return 0, false
-	}
-	verticalDist := *p.Altitude - teeAlt
+	verticalDist := p.Alt - teeAlt
 	totalDist := math.Sqrt(math.Pow(surfaceDist, 2) + math.Pow(verticalDist, 2))
 
 	// OB (Out of Bounds) Check via Geofencing
@@ -114,7 +111,7 @@ func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) 
 		SELECT 1 FROM course_obstacles 
 		WHERE ST_Intersects(boundary, ST_SetSRID(ST_MakePoint($1, $2), 4326))
 	)`
-	db.QueryRow(obQuery, *p.Longitude, *p.Latitude).Scan(&isOB)
+	db.QueryRow(obQuery, p.Lon, p.Lat).Scan(&isOB)
 
 	return totalDist, isOB
 }
@@ -126,7 +123,7 @@ func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
 	}
 
 	// Distance between two points
-	dist := Haversine(p1.GetLatitude(), p1.GetLongitude(), p2.GetLatitude(), p2.GetLongitude())
+	dist := Haversine(p1.GetLat(), p1.GetLon(), p2.GetLat(), p2.GetLon())
 
 	return dist / timeDelta
 }
@@ -148,23 +145,17 @@ func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
 	return R * c
 }
 
-// This takes raw G-force data and the sensor's offset from center
-func CalculateRPM(accelX, accelY float64, radiusMeters float64) float64 {
-
-	//calculate resultant acceleration (Centripetal Force) via Pythagorem theorem combining x and y axes
-	resultantG := math.Sqrt(math.Pow(accelX, 2) + math.Pow(accelY, 2))
-
-	//convert Gs to m/s^2 (1G = 9.80665 m/s^2)
-	accelMS2 := resultantG * 9.80665
-
-	//solve for Omega (Angular Velocity in rad/s)
-	//w = sqrt(a / r)
-	omega := math.Sqrt(accelMS2 / radiusMeters)
-
-	//convert Radians per Second to Revolutions per Minute
-	//RPM = (w * 60) / (2 * Pi)
-	rpm := (omega * 60) / (2 * math.Pi)
-
+// CalculateRPM derives RPM from gyroscope Z-axis angular velocity (deg/s).
+// The gyro Z-axis measures spin rate around the disc's vertical axis.
+// At rest gyro_z ≈ 0 so RPM ≈ 0 — unlike the old centripetal-accel formula
+// which falsely read ~170 RPM from gravity leaking into accel X/Y.
+func CalculateRPM(gyroZDegPerSec float64) float64 {
+	// 1 RPM = 6 deg/s  (360 deg / 60 s)
+	rpm := math.Abs(gyroZDegPerSec) / 6.0
+	// Suppress sensor noise — anything below ~5 RPM (30 deg/s) is drift
+	if rpm < 5 {
+		return 0
+	}
 	return rpm
 }
 
@@ -246,7 +237,7 @@ func calculateTelemetrySummary(pings []*pb.Ping) (float64, float64, float64) {
 	var totalDistanceMeters float64
 	var maxRPM float64
 	for i, ping := range pings {
-		rpm := CalculateRPM(float64(ping.GetAccelX()), float64(ping.GetAccelY()), SensorRadiusMeters)
+		rpm := CalculateRPM(float64(ping.GetGyroZ()))
 		if rpm > maxRPM {
 			maxRPM = rpm
 		}
@@ -257,17 +248,17 @@ func calculateTelemetrySummary(pings []*pb.Ping) (float64, float64, float64) {
 
 		prev := pings[i-1]
 		totalDistanceMeters += Haversine(
-			prev.GetLatitude(),
-			prev.GetLongitude(),
-			ping.GetLatitude(),
-			ping.GetLongitude(),
+			prev.GetLat(),
+			prev.GetLon(),
+			ping.GetLat(),
+			ping.GetLon(),
 		)
 	}
 
 	first := pings[0]
 	last := pings[len(pings)-1]
-	horizontalMeters := Haversine(first.GetLatitude(), first.GetLongitude(), last.GetLatitude(), last.GetLongitude())
-	verticalMeters := last.GetAltitude() - first.GetAltitude()
+	horizontalMeters := Haversine(first.GetLat(), first.GetLon(), last.GetLat(), last.GetLon())
+	verticalMeters := last.GetAlt() - first.GetAlt()
 	releaseAngle := 0.0
 	if horizontalMeters > 0 {
 		releaseAngle = math.Atan2(verticalMeters, horizontalMeters) * (180.0 / math.Pi)
@@ -349,32 +340,24 @@ func processSinglePing(db *sql.DB, ping *pb.Ping) error {
 	if !ValidatePing(ping) {
 		return nil // Skip invalid pings silently
 	}
-	if ping.Latitude == nil || ping.Longitude == nil || ping.Altitude == nil {
+	if ping.Lat == 0 && ping.Lon == 0 {
 		return nil
 	}
 
-	// Calculate RPM from Centripetal Acceleration
-	resultantG := math.Sqrt(math.Pow(float64(ping.AccelX), 2) + math.Pow(float64(ping.AccelY), 2))
-	accelMS2 := resultantG * 9.80665
+	// Calculate RPM from gyroscope Z-axis (spin rate in deg/s)
+	rpm := CalculateRPM(float64(ping.GyroZ))
 
-	var rpm float64 = 0
-	if resultantG > 0.1 { // Avoid division by zero/noise
-		omega := math.Sqrt(accelMS2 / SensorRadiusMeters)
-		rpm = (omega * 60) / (2 * math.Pi)
-	}
+	hdop := ping.Hdop
 
-	hdop := float32(0)
-	if ping.Hdop != nil {
-		hdop = ping.GetHdop()
-	}
-
-	wobble := math.Abs(float64(ping.AccelZ))
+	// Wobble = deviation of accel_z from 1G (gravity). A perfectly flat
+	// disc at rest reads ~1.0g on Z; tilt/wobble pushes that away from 1.0.
+	wobble := math.Abs(float64(ping.AccelZ) - 1.0)
 
 	// Persist to PostGIS
 	_, err := db.Exec(`
 		INSERT INTO throws (device_id, location, hdop, rpm, wobble_g, timestamp)
 		VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7, $8)`,
-		ping.GetDeviceId(), ping.GetLongitude(), ping.GetLatitude(), ping.GetAltitude(), hdop, rpm, wobble,
+		ping.GetDeviceId(), ping.GetLon(), ping.GetLat(), ping.GetAlt(), hdop, rpm, wobble,
 		time.Unix(ping.Timestamp/1000, 0),
 	)
 

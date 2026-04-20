@@ -23,6 +23,7 @@ type Props = {
   time: number;              // flight time in seconds
   unit?: DistanceUnit;
   onSaveThrow?: () => void;  // optional manual save callback
+  rpm?: number;              // real RPM from gyroscope telemetry
 };
 
 type DeviationPoint = {
@@ -30,7 +31,7 @@ type DeviationPoint = {
   deviation: number;
 };
 
-export default function ThrowResults({ distance, time, unit = 'feet', onSaveThrow }: Props) {
+export default function ThrowResults({ distance, time, unit = 'feet', onSaveThrow, rpm }: Props) {
   const { settings } = useSettings();
 
   const convert = (val: number) => (unit === 'meters' ? val * 0.3048 : val);
@@ -40,10 +41,8 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
   const displayedVelocity = time > 0 ? (convert(distance) / time).toFixed(1) : '0.0';
   const displayedAvgHeight = (40 * 0.65 * (unit === 'meters' ? 0.3048 : 1)).toFixed(1);
 
-  // TODO (Backend): Replace fake RPM with real calculated value
-  // - Use gyro data or disc rotation sensor
-  // - Typical range: 300–700 RPM for most throws
-  const fakeRpm = Math.round(350 + (distance / 400) * 250);
+  // Use real RPM from gyroscope telemetry — no fake estimates
+  const displayRpm = rpm && rpm > 0 ? Math.round(rpm) : 0;
 
   // Determine which metrics to show based on user settings
   const showTime = settings.selectedMetrics.includes('time');
@@ -193,7 +192,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
       <div className={`grid ${gridCols} gap-4 text-center overflow-hidden`}>
         {showTime && (
           <div className="bg-[#223066]/60 rounded-lg p-3 sm:p-4 border border-[#764d9f]/30">
-            <div className="text-base sm:text-lg font-bold text-[#54c4c3]">
+            <div className="text-base sm:text-lg font-bold text-[#54c4c3] tabular-nums">
               {time.toFixed(2)}
             </div>
             <div className="text-xs text-white/70 mt-1">Time (s)</div>
@@ -202,7 +201,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
 
         {showDistance && (
           <div className="bg-[#223066]/60 rounded-lg p-3 sm:p-4 border border-[#764d9f]/30">
-            <div className="text-base sm:text-lg font-bold text-[#54c4c3]">
+            <div className="text-base sm:text-lg font-bold text-[#54c4c3] tabular-nums">
               {displayedDistance}
             </div>
             <div className="text-xs text-white/70 mt-1">Distance ({label})</div>
@@ -211,7 +210,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
 
         {showVelocity && (
           <div className="bg-[#223066]/60 rounded-lg p-3 sm:p-4 border border-[#764d9f]/30">
-            <div className="text-base sm:text-lg font-bold text-[#54c4c3]">
+            <div className="text-base sm:text-lg font-bold text-[#54c4c3] tabular-nums">
               {displayedVelocity}
             </div>
             <div className="text-xs text-white/70 mt-1">Avg Velocity ({label}/s)</div>
@@ -220,8 +219,8 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
 
         {showRpm && (
           <div className="bg-[#223066]/60 rounded-lg p-3 sm:p-4 border border-[#764d9f]/30">
-            <div className="text-base sm:text-lg font-bold text-[#54c4c3]">
-              {fakeRpm}
+            <div className="text-base sm:text-lg font-bold text-[#54c4c3] tabular-nums">
+              {displayRpm}
             </div>
             <div className="text-xs text-white/70 mt-1">Avg RPM</div>
           </div>
@@ -229,7 +228,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
 
         {showHeight && (
           <div className="bg-[#223066]/60 rounded-lg p-3 sm:p-4 border border-[#764d9f]/30">
-            <div className="text-base sm:text-lg font-bold text-[#54c4c3]">
+            <div className="text-base sm:text-lg font-bold text-[#54c4c3] tabular-nums">
               {displayedAvgHeight}
             </div>
             <div className="text-xs text-white/70 mt-1">Avg Height ({label})</div>
@@ -256,20 +255,7 @@ export default function ThrowResults({ distance, time, unit = 'feet', onSaveThro
         </p>
       )}
 
-      {/* TODO (Backend): Replace alert with real save */}
-      {/* In parent DiscActionsDropdown.tsx, handleSaveThrow should POST to /api/throws */}
-      {/* Payload example: */}
-      {/* { */}
-      {/*   discId: selectedDisc?.id, */}
-      {/*   sessionId: activeSession?.id, // if sessions implemented */}
-      {/*   distance: trackerDistance, */}
-      {/*   time: elapsedTime, */}
-      {/*   velocity: displayedVelocity, */}
-      {/*   rpm: fakeRpm, // replace with real */}
-      {/*   avgHeight: displayedAvgHeight, // replace with real */}
-      {/*   timestamp: new Date().toISOString() */}
-      {/* } */}
-      {/* On success: show toast "Throw saved!" */}
+
     </div>
   );
 }

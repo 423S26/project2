@@ -1,25 +1,7 @@
 // components/disc-actions/DirectionalTrackingOverlay.tsx
-
-// TODO (Backend/Hardware): Replace simulated rotation with real GPS/compass data
-// Integration options:
-// 1. DeviceOrientation API (browser): window.addEventListener('deviceorientation', ...)
-//    Use event.alpha or event.webkitCompassHeading for true north-based direction
-// 2. Web Bluetooth from disc tracker: Receive heading updates via GATT characteristic
-// 3. Capacitor plugin (native): Use @capacitor/geolocation or custom plugin for heading
-// 4. Backend telemetry processing: Server can fuse GPS + IMU data and return { heading: 42 } (degrees)
-// 
-// Example real implementation sketch:
-// useEffect(() => {
-//   const handleOrientation = (event: DeviceOrientationEvent) => {
-//     const heading = event.alpha ?? event.webkitCompassHeading ?? 0;
-//     setRotation(heading); // or calculate relative to disc position
-//   };
-//   window.addEventListener('deviceorientation', handleOrientation);
-//   return () => window.removeEventListener('deviceorientation', handleOrientation);
-// }, []);
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { DistanceUnit } from './types';
 
 type Props = {
@@ -27,26 +9,99 @@ type Props = {
   onClose: () => void;
   distance: number;
   unit?: DistanceUnit;
+  discLat?: number;
+  discLon?: number;
 };
+
+/** Calculate bearing in degrees from point A to point B */
+function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const toDeg = (rad: number) => (rad * 180) / Math.PI;
+
+  const dLon = toRad(lon2 - lon1);
+  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
 
 export default function DirectionalTrackingOverlay({ 
   isOpen, 
   onClose, 
   distance, 
-  unit = 'feet' 
+  unit = 'feet',
+  discLat,
+  discLon,
 }: Props) {
   const [rotation, setRotation] = useState(0);
+  const [hasRealData, setHasRealData] = useState(false);
+  const phonePosRef = useRef<{ lat: number; lon: number } | null>(null);
+  const compassRef = useRef<number>(0);
+  const watchIdRef = useRef<number | null>(null);
 
-  // Smooth continuous rotation
   useEffect(() => {
     if (!isOpen) return;
 
-    const interval = setInterval(() => {
-      setRotation(prev => (prev + 5) % 360);
-    }, 70);
+    const hasDiscPosition = discLat != null && discLon != null && (discLat !== 0 || discLon !== 0);
 
-    return () => clearInterval(interval);
-  }, [isOpen]);
+    // Listen for phone compass heading via DeviceOrientation API
+    const handleOrientation = (event: DeviceOrientationEvent) => {
+      // webkitCompassHeading is iOS; alpha is Android (relative to arbitrary ref)
+      const heading = (event as any).webkitCompassHeading ?? event.alpha ?? 0;
+      compassRef.current = heading;
+
+      if (hasDiscPosition && phonePosRef.current) {
+        const bearing = calculateBearing(
+          phonePosRef.current.lat,
+          phonePosRef.current.lon,
+          discLat!,
+          discLon!,
+        );
+        // Arrow rotation: bearing relative to where the phone is pointing
+        setRotation((bearing - heading + 360) % 360);
+        setHasRealData(true);
+      }
+    };
+
+    window.addEventListener('deviceorientation', handleOrientation);
+
+    // Track phone GPS position
+    if (hasDiscPosition && 'geolocation' in navigator) {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          phonePosRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        },
+        undefined,
+        { enableHighAccuracy: true, maximumAge: 2000 },
+      );
+    }
+
+    // Fallback: if no real orientation data after 2s, spin slowly
+    const fallbackTimeout = setTimeout(() => {
+      if (!hasRealData) {
+        // Keep spinning as visual indicator that real data is unavailable
+      }
+    }, 2000);
+
+    // Fallback spinning when no real compass/GPS
+    let fallbackInterval: NodeJS.Timeout | undefined;
+    if (!hasDiscPosition) {
+      fallbackInterval = setInterval(() => {
+        setRotation((prev) => (prev + 5) % 360);
+      }, 70);
+    }
+
+    return () => {
+      window.removeEventListener('deviceorientation', handleOrientation);
+      clearTimeout(fallbackTimeout);
+      if (fallbackInterval) clearInterval(fallbackInterval);
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+    };
+  }, [isOpen, discLat, discLon, hasRealData]);
 
   const displayedDistance = unit === 'meters' 
     ? (distance * 0.3048).toFixed(1) 

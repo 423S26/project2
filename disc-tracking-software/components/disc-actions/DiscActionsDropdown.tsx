@@ -13,12 +13,25 @@ import AddDiscPopup from './AddDiscPopup';
 import { Disc } from './types';
 import { discAPI, throwAPI } from '@/lib/api-client';
 import { bleManager } from '@/lib/ble';
+import { PingData } from '@/lib/pb/codec';
 import { toast } from 'sonner';
 
 type DiscActionsDropdownProps = {
   currentDiscs?: Disc[];
   sessionId?: string;
 };
+
+/** Calculate distance in feet between two GPS coordinates using haversine formula */
+function haversineDistanceFeet(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const R = 20902231; // Earth radius in feet
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 export default function DiscActionsDropdown({
   currentDiscs = [],
@@ -55,6 +68,13 @@ export default function DiscActionsDropdown({
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const [justStopped, setJustStopped] = useState(false);
 
+  // Telemetry state from BLE pings
+  const [discLat, setDiscLat] = useState<number>(0);
+  const [discLon, setDiscLon] = useState<number>(0);
+  const [lastRpm, setLastRpm] = useState<number>(0);
+  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
+  const phonePosRef = useRef<{ lat: number; lon: number } | null>(null);
+
   useEffect(() => {
     setDiscs(currentDiscs);
   }, [currentDiscs]);
@@ -75,6 +95,55 @@ export default function DiscActionsDropdown({
         toast.success('Telemetry batch synced.');
       }
     });
+
+    // Listen for real-time BLE pings from the disc tracker
+    const unsubscribePing = bleManager.onPing((ping: PingData) => {
+      // Only trust GPS data when the firmware has a real fix
+      const hasGpsFix = ping.sats >= 4 && ping.lat !== 0 && ping.lon !== 0;
+
+      // Update disc GPS position
+      if (hasGpsFix) {
+        setDiscLat(ping.lat);
+        setDiscLon(ping.lon);
+      }
+
+      // Calculate RPM from gyro_z (firmware sends deg/s; 1 RPM = 6 deg/s)
+      const rpm = Math.abs(ping.gyro_z) / 6;
+      if (rpm >= 5) setLastRpm(rpm); // noise floor
+
+      // Update battery level from firmware
+      if (ping.batt_pct > 0) {
+        setBatteryLevel(ping.batt_pct);
+      }
+
+      // Update tracker distance from phone position to disc position
+      if (phonePosRef.current && hasGpsFix) {
+        const distFeet = haversineDistanceFeet(
+          phonePosRef.current.lat,
+          phonePosRef.current.lon,
+          ping.lat,
+          ping.lon,
+        );
+        setTrackerDistance(distFeet);
+      }
+    });
+
+    // Watch phone GPS position for distance calculations
+    let geoWatchId: number | undefined;
+    if ('geolocation' in navigator) {
+      geoWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          phonePosRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        },
+        undefined,
+        { enableHighAccuracy: true, maximumAge: 2000 },
+      );
+    }
+
+    return () => {
+      unsubscribePing();
+      if (geoWatchId !== undefined) navigator.geolocation.clearWatch(geoWatchId);
+    };
   }, []);
 
   const toggleDropdown = () => setIsOpen(!isOpen);
@@ -123,7 +192,7 @@ export default function DiscActionsDropdown({
       connectDevice(selectedDisc.connectionNumber || selectedDisc.id, selectedDisc.name);
 
       setSyncStatus('success');
-      setTrackerDistance(285); // Placeholder distance - will be updated from telemetry
+      setTrackerDistance(0); // Will be updated from live BLE telemetry pings
       closeDropdown();
       toast.success(`Connected to ${selectedDisc.name}. Telemetry batching is active.`);
     } catch (error) {
@@ -229,6 +298,7 @@ export default function DiscActionsDropdown({
     setElapsedTime(0);
     setShowThrowResults(false);
     setJustStopped(false);
+    setLastRpm(0);
   };
 
   useEffect(() => {
@@ -251,12 +321,12 @@ export default function DiscActionsDropdown({
       await throwAPI.saveThrow({
         sessionId: sessionId,
         discId: selectedDisc.id,
-        teeLat: 0, // Placeholder - would need actual GPS data
-        teeLon: 0,
-        foundLat: 0,
-        foundLon: 0,
+        teeLat: phonePosRef.current?.lat ?? 0,
+        teeLon: phonePosRef.current?.lon ?? 0,
+        foundLat: discLat,
+        foundLon: discLon,
         distance: trackerDistance,
-        maxRpm: 0, // Placeholder - would come from hardware
+        maxRpm: lastRpm,
         exitVelocity: trackerDistance / elapsedTime,
         flightTime: elapsedTime,
         state: 'landed',
@@ -306,12 +376,16 @@ export default function DiscActionsDropdown({
           <TrackerDisplay
             distance={trackerDistance}
             unit={settings.distanceUnit}
+            batteryLevel={batteryLevel ?? undefined}
+            discLat={discLat}
+            discLon={discLon}
           />
         </>
       )}
 
       {syncStatus === 'success' && trackerDistance !== null && (
         <div className="mt-8 w-full max-w-md mx-auto space-y-6 px-4">
+          <div className="min-h-[200px]">
           {settings.throwMode === 'manual' ? (
             <Stopwatch
               isRunning={isRunning}
@@ -330,6 +404,7 @@ export default function DiscActionsDropdown({
               onReset={resetTiming}
             />
           )}
+          </div>
 
           {showThrowResults && (
             <ThrowResults
@@ -337,6 +412,7 @@ export default function DiscActionsDropdown({
               time={elapsedTime}
               unit={settings.distanceUnit}
               onSaveThrow={handleSaveThrow}
+              rpm={lastRpm}
             />
           )}
         </div>

@@ -3,7 +3,6 @@
 
 // ──────────────────────────────────────────────────────────────
 // RemoveConfirmPopup – confirmation dialog before removing a tracked disc
-// Backend integration point: DELETE disc from user profile
 // ──────────────────────────────────────────────────────────────
 
 type Props = {
@@ -36,27 +35,7 @@ export default function RemoveConfirmPopup({ discName, onConfirm, onCancel }: Pr
             <button
               className="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition"
               onClick={() => {
-                // TODO (Backend): Call DELETE /api/discs/{discId} here
-                //
-                // Example implementation:
-                // fetch(`/api/discs/${selectedDisc?.id}`, { method: 'DELETE' })
-                //   .then(res => {
-                //     if (!res.ok) throw new Error('Failed to delete disc');
-                //     // Success: call onConfirm() to update UI (clear selected disc, refresh list)
-                //     onConfirm();
-                //   })
-                //   .catch(err => {
-                //     console.error(err);
-                //     alert('Failed to remove disc. Please try again.');
-                //   });
-                //
-                // Notes:
-                // - Use discId (not name) for deletion – pass discId as prop if available
-                // - On success: refetch user discs list in parent (DiscActionsDropdown)
-                // - Show loading state / disable button during request
-                // - Handle 404 (disc not found) or 403 (not authorized)
-
-                onConfirm(); // TEMP: local UI update – replace with API call
+                onConfirm();
               }}
             >
               Remove

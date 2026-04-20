@@ -77,6 +77,7 @@ export function decodePing(data: Uint8Array): PingData {
     let gyro_y = 0;
     let gyro_z = 0;
     let timestamp = 0;
+    let batt_pct = 0;
 
     while (decoder.getOffset() < data.length) {
       try {
@@ -93,29 +94,31 @@ export function decodePing(data: Uint8Array): PingData {
         } else if (fieldNumber === 4) {
           alt = decoder.decodeDouble();
         } else if (fieldNumber === 5) {
-          speed_mps = decoder.decodeDouble();
+          speed_mps = decoder.decodeFloat();
         } else if (fieldNumber === 6) {
-          heading = decoder.decodeDouble();
+          heading = decoder.decodeFloat();
         } else if (fieldNumber === 7) {
-          hdop = decoder.decodeDouble();
+          temp_c = decoder.decodeFloat();
         } else if (fieldNumber === 8) {
-          sats = decoder.decodeVarint();
+          hdop = decoder.decodeFloat();
         } else if (fieldNumber === 9) {
-          temp_c = decoder.decodeDouble();
+          sats = decoder.decodeVarint();
         } else if (fieldNumber === 10) {
-          accel_x = decoder.decodeDouble();
+          accel_x = decoder.decodeFloat();
         } else if (fieldNumber === 11) {
-          accel_y = decoder.decodeDouble();
+          accel_y = decoder.decodeFloat();
         } else if (fieldNumber === 12) {
-          accel_z = decoder.decodeDouble();
+          accel_z = decoder.decodeFloat();
         } else if (fieldNumber === 13) {
-          gyro_x = decoder.decodeDouble();
+          gyro_x = decoder.decodeFloat();
         } else if (fieldNumber === 14) {
-          gyro_y = decoder.decodeDouble();
+          gyro_y = decoder.decodeFloat();
         } else if (fieldNumber === 15) {
-          gyro_z = decoder.decodeDouble();
+          gyro_z = decoder.decodeFloat();
         } else if (fieldNumber === 16) {
           timestamp = decoder.decodeVarint();
+        } else if (fieldNumber === 17) {
+          batt_pct = decoder.decodeVarint();
         } else {
           // Skip unknown fields
           if (wireType === 2) {
@@ -130,12 +133,6 @@ export function decodePing(data: Uint8Array): PingData {
       } catch (fieldError) {
         break;
       }
-    }
-
-    if (!device_id) {
-      throw new FirmwareConnectionError('Ping missing required device_id', undefined, {
-        offset: decoder.getOffset()
-      });
     }
 
     return {
@@ -155,6 +152,7 @@ export function decodePing(data: Uint8Array): PingData {
       gyro_y,
       gyro_z,
       timestamp,
+      batt_pct,
     };
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -186,6 +184,184 @@ export interface PingData {
   gyro_y: number;
   gyro_z: number;
   timestamp: number;
+  batt_pct: number;
+}
+
+// ──────────────────────────────────────────────────────────────
+// Helpers for hand-encoding to hardware.proto Ping format
+// ──────────────────────────────────────────────────────────────
+
+function encodeTag(fieldNumber: number, wireType: number): Uint8Array {
+  return ProtoEncoder.encodeVarint((fieldNumber << 3) | wireType);
+}
+
+function encodeFloat32(value: number): Uint8Array {
+  const buffer = new ArrayBuffer(4);
+  const view = new DataView(buffer);
+  view.setFloat32(0, value, true);
+  return new Uint8Array(buffer);
+}
+
+function encodeFloat64(value: number): Uint8Array {
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setFloat64(0, value, true);
+  return new Uint8Array(buffer);
+}
+
+/**
+ * Encode a PingData into hardware.proto Ping binary.
+ * Field numbers now match firmware tracker.proto exactly.
+ *
+ *   hardware.proto field layout (aligned with tracker.proto):
+ *     1=device_id(string)
+ *     2=lat(double)  3=lon(double)  4=alt(double)
+ *     5=speed_mps(float)  6=heading(float)  7=temp_c(float)
+ *     8=hdop(float)  9=sats(int32)
+ *    10=accel_x(float) 11=accel_y(float) 12=accel_z(float)
+ *    13=gyro_x(float)  14=gyro_y(float)  15=gyro_z(float)
+ *    16=timestamp(int64)  17=batt_pct(int32)
+ */
+export function encodeHardwarePing(ping: PingData): Uint8Array {
+  const parts: Uint8Array[] = [];
+
+  // field 1: device_id (string, wire 2)
+  if (ping.device_id) {
+    const encoded = ProtoEncoder.encodeString(ping.device_id);
+    parts.push(encodeTag(1, 2));
+    parts.push(ProtoEncoder.encodeVarint(encoded.length));
+    parts.push(encoded);
+  }
+
+  // field 2: lat (double, wire 1)
+  if (ping.lat !== 0) {
+    parts.push(encodeTag(2, 1));
+    parts.push(encodeFloat64(ping.lat));
+  }
+
+  // field 3: lon (double, wire 1)
+  if (ping.lon !== 0) {
+    parts.push(encodeTag(3, 1));
+    parts.push(encodeFloat64(ping.lon));
+  }
+
+  // field 4: alt (double, wire 1)
+  if (ping.alt !== 0) {
+    parts.push(encodeTag(4, 1));
+    parts.push(encodeFloat64(ping.alt));
+  }
+
+  // field 5: speed_mps (float, wire 5)
+  if (ping.speed_mps !== 0) {
+    parts.push(encodeTag(5, 5));
+    parts.push(encodeFloat32(ping.speed_mps));
+  }
+
+  // field 6: heading (float, wire 5)
+  if (ping.heading !== 0) {
+    parts.push(encodeTag(6, 5));
+    parts.push(encodeFloat32(ping.heading));
+  }
+
+  // field 7: temp_c (float, wire 5)
+  if (ping.temp_c !== 0) {
+    parts.push(encodeTag(7, 5));
+    parts.push(encodeFloat32(ping.temp_c));
+  }
+
+  // field 8: hdop (float, wire 5)
+  if (ping.hdop !== 0) {
+    parts.push(encodeTag(8, 5));
+    parts.push(encodeFloat32(ping.hdop));
+  }
+
+  // field 9: sats (int32, wire 0)
+  if (ping.sats !== 0) {
+    parts.push(encodeTag(9, 0));
+    parts.push(ProtoEncoder.encodeVarint(ping.sats));
+  }
+
+  // field 10: accel_x (float, wire 5)
+  if (ping.accel_x !== 0) {
+    parts.push(encodeTag(10, 5));
+    parts.push(encodeFloat32(ping.accel_x));
+  }
+
+  // field 11: accel_y (float, wire 5)
+  if (ping.accel_y !== 0) {
+    parts.push(encodeTag(11, 5));
+    parts.push(encodeFloat32(ping.accel_y));
+  }
+
+  // field 12: accel_z (float, wire 5)
+  if (ping.accel_z !== 0) {
+    parts.push(encodeTag(12, 5));
+    parts.push(encodeFloat32(ping.accel_z));
+  }
+
+  // field 13: gyro_x (float, wire 5)
+  if (ping.gyro_x !== 0) {
+    parts.push(encodeTag(13, 5));
+    parts.push(encodeFloat32(ping.gyro_x));
+  }
+
+  // field 14: gyro_y (float, wire 5)
+  if (ping.gyro_y !== 0) {
+    parts.push(encodeTag(14, 5));
+    parts.push(encodeFloat32(ping.gyro_y));
+  }
+
+  // field 15: gyro_z (float, wire 5)
+  if (ping.gyro_z !== 0) {
+    parts.push(encodeTag(15, 5));
+    parts.push(encodeFloat32(ping.gyro_z));
+  }
+
+  // field 16: timestamp (int64, wire 0)
+  if (ping.timestamp !== 0) {
+    parts.push(encodeTag(16, 0));
+    parts.push(ProtoEncoder.encodeVarint(ping.timestamp));
+  }
+
+  // field 17: batt_pct (int32, wire 0)
+  if (ping.batt_pct !== 0) {
+    parts.push(encodeTag(17, 0));
+    parts.push(ProtoEncoder.encodeVarint(ping.batt_pct));
+  }
+
+  return ProtoEncoder.concatenateArrays(parts);
+}
+
+/**
+ * Encode a batch of PingData into hardware.proto PingBatch binary.
+ *
+ *   PingBatch: repeated Ping pings=1, string device_id=2, int64 batch_timestamp=3
+ */
+export function encodeSyncBatch(pings: PingData[], deviceId: string): Uint8Array {
+  const parts: Uint8Array[] = [];
+
+  for (const ping of pings) {
+    const encoded = encodeHardwarePing(ping);
+    // field 1 (repeated Ping), wire 2 (length-delimited)
+    parts.push(encodeTag(1, 2));
+    parts.push(ProtoEncoder.encodeVarint(encoded.length));
+    parts.push(encoded);
+  }
+
+  // field 2: device_id (string, wire 2)
+  if (deviceId) {
+    const idBytes = ProtoEncoder.encodeString(deviceId);
+    parts.push(encodeTag(2, 2));
+    parts.push(ProtoEncoder.encodeVarint(idBytes.length));
+    parts.push(idBytes);
+  }
+
+  // field 3: batch_timestamp (int64, wire 0)
+  const now = Date.now();
+  parts.push(encodeTag(3, 0));
+  parts.push(ProtoEncoder.encodeVarint(now));
+
+  return ProtoEncoder.concatenateArrays(parts);
 }
 
 /**

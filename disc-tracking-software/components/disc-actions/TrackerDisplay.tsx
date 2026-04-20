@@ -9,24 +9,19 @@ import { DistanceUnit } from './types';
 type Props = {
   distance: number;       // always in feet from parent
   unit?: DistanceUnit;    // 'feet' | 'meters'
+  batteryLevel?: number;  // 0-100, from device telemetry
+  discLat?: number;       // disc GPS latitude from telemetry
+  discLon?: number;       // disc GPS longitude from telemetry
 };
 
-export default function TrackerDisplay({ distance, unit = 'feet' }: Props) {
+export default function TrackerDisplay({ distance, unit = 'feet', batteryLevel, discLat, discLon }: Props) {
   const displayedDistance = unit === 'meters' 
     ? (distance * 0.3048).toFixed(1) 
     : distance.toFixed(0);
   
   const label = unit === 'meters' ? 'm' : 'ft';
 
-  // ──────────────────────────────────────────────────────────────
-  // Battery Level
-  // TODO (Backend/Hardware): Replace static batteryLevel with real data from disc tracker
-  // Integration points:
-  // - Telemetry upload response: { battery_level: 87 }
-  // - Capacitor plugin (for native iOS/Android) listening to device events
-  // - Update frequency: every 10-30 seconds or on change
-  // ──────────────────────────────────────────────────────────────
-  const batteryLevel = 87;
+  const displayBattery = batteryLevel ?? null;
 
   const [showDirectionalOverlay, setShowDirectionalOverlay] = useState(false);
 
@@ -37,7 +32,7 @@ export default function TrackerDisplay({ distance, unit = 'feet' }: Props) {
         <div className="relative w-[75%] aspect-square max-w-70 rounded-full bg-[#764d9f] flex flex-col items-center justify-center shadow-2xl ring-2 ring-[#764d9f]/30">
           
           {/* Large Distance Number */}
-          <span className="text-5xl md:text-6xl font-extrabold text-white tracking-tight">
+          <span className="text-5xl md:text-6xl font-extrabold text-white tracking-tight tabular-nums min-w-[4ch] text-center">
             {displayedDistance}
           </span>
 
@@ -47,10 +42,12 @@ export default function TrackerDisplay({ distance, unit = 'feet' }: Props) {
           </span>
 
           {/* Battery Indicator - inside circle, bottom */}
-          <div className="absolute bottom-8 flex items-center gap-2 text-white/90">
-            <Battery size={22} className="text-[#54c4c3]" />
-            <span className="text-lg font-medium">{batteryLevel}%</span>
-          </div>
+          {displayBattery !== null && (
+            <div className="absolute bottom-8 flex items-center gap-2 text-white/90">
+              <Battery size={22} className="text-[#54c4c3]" />
+              <span className="text-lg font-medium tabular-nums">{displayBattery}%</span>
+            </div>
+          )}
         </div>
 
         {/* Directional Tracking Button - below the circle */}
@@ -69,9 +66,8 @@ export default function TrackerDisplay({ distance, unit = 'feet' }: Props) {
         onClose={() => setShowDirectionalOverlay(false)}
         distance={distance}
         unit={unit}
-        // TODO (Backend/Hardware): Pass real-time heading or direction data if available
-        // For true directional tracking, send current compass bearing or relative disc direction
-        // Example: x,y quartant data (NE, NW, SE, SW) or degree heading (0-360°) to rotate the arrow accordingly
+        discLat={discLat}
+        discLon={discLon}
       />
     </>
   );
