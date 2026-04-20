@@ -242,11 +242,13 @@ export default function DashboardHome() {
       </div>
 
       {/* Throw Statistics Overlay */}
-      <ThrowStatisticsOverlay
-        isOpen={showStatisticsOverlay}
-        onClose={() => setShowStatisticsOverlay(false)}
-        activeSession={activeSession?.id || null}
-      />
+      {showStatisticsOverlay && (
+        <ThrowStatisticsOverlay
+          isOpen={showStatisticsOverlay}
+          activeSession={activeSession?.id || null} onCloseAction={function (): void {
+            throw new Error('Function not implemented.');
+          } }        />
+      )}
 
       {/* Start Session Popup */}
       {showStartPopup && (

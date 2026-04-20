@@ -1,0 +1,35 @@
+# Caddyfile — Auto-HTTPS reverse proxy
+# Replace "flightiq.pro" with your actual domain.
+# Place this at /etc/caddy/Caddyfile on your VPS.
+# Caddy automatically provisions and renews Let's Encrypt TLS certificates.
+
+flightiq.pro {
+    # Go backend — all /api requests
+    handle /api/* {
+        reverse_proxy localhost:8080
+    }
+
+    # Next.js — everything else
+    handle {
+        reverse_proxy localhost:3000
+    }
+
+    # Security headers
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "origin-when-cross-origin"
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-XSS-Protection "1; mode=block"
+        -Server
+    }
+
+    # Gzip/Brotli compression
+    encode gzip zstd
+
+    # Access log
+    log {
+        output file /var/log/caddy/flightiq.log
+        format json
+    }
+}

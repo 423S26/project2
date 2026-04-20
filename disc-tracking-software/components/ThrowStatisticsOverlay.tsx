@@ -25,11 +25,11 @@ type SessionOption = {
 
 type Props = {
   isOpen: boolean;
-  onClose: () => void;
+  onCloseAction: () => void;
   activeSession: string | null;
 };
 
-export default function ThrowStatisticsOverlay({ isOpen, onClose, activeSession }: Props) {
+export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSession }: Props) {
   const [selectedSession, setSelectedSession] = useState<string | null>(activeSession);
   const [throws, setThrows] = useState<ThrowData[]>([]);
   const [sessions, setSessions] = useState<SessionOption[]>([]);
@@ -126,7 +126,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onClose, activeSession 
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50" onClick={onCloseAction} />
 
       <div className="fixed inset-0 z-60 flex items-center justify-center p-4">
         <div className="bg-[#190f2A] w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-2xl border border-[#456fb6]/50 shadow-2xl flex flex-col">
@@ -134,7 +134,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onClose, activeSession 
           <div className="p-6 border-b border-[#223066] flex items-center justify-between bg-[#223066]/50">
             <h2 className="text-2xl font-semibold text-[#54c4c3]">Throw Statistics</h2>
             <button
-              onClick={onClose}
+              onClick={onCloseAction}
               className="text-white/70 hover:text-white p-2 rounded-full hover:bg-white/10 transition"
             >
               ✕
