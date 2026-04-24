@@ -79,16 +79,16 @@ Saved throws appear in the **User Throw Statistics** section, where you can:
 
 **Experiment freely** — the more data from sessions you collect, the better your on-course decisions will become.
 
-
+### Note: all of the User Docs are provided on the main website page and the Dashboard of the webapp under "User guide".
 
 ### DEVELOPER DOCS: 
 
-*Development tools: Microsoft Visual Studio Code; NextJS, TailwindCSS, TypeScript, PostgresQL, Timescale DB, PostGIS, Upstash Redis.
+*Development tools: Microsoft Visual Studio Code; NextJS, TailwindCSS, TypeScript, PostgresQL, Timescale DB, PostGIS, Upstash Redis, Drizzle ORM.
 
 * Landing page was created using Next.js with TailwindCSS and TypeScript for styling. Universal styles have been applied to meet WCAG AA standards. For the backend, a file structure was established with 2 groups to differentiate between the website and web app. This is shown using () in the naming of folders for organizational purposes.
 * Components and other TSX styling are shown in PascalCase, with the  database using snake_case. 
-* Configs for auth have been started, the .env.local file is being used to handle environmental variables as well as backend API keys. Additional API calls are being routed through the api folder in the project. **NOTE: Env files are NOT public and are shared privately between contributors**
-* Backend Server will be done in GO, this interacts as the port for the web application to interact with the devices and send data packets for the web app to process and serve to the end user. Recharts, a Next.js library, handles the visualization of the data in chart and card form.
+* Configs for auth have been started, the .env.local file is being used to handle environmental variables as well as backend API keys. Additional API calls are being routed through the api folder in the project and the Golang server. **NOTE: Env files are NOT public and are shared privately between contributors**
+* Backend Server has been done in Golang, which interacts as the port for the web application to interact with the devices and send data packets for the web app to process and serve to the end user. Recharts, a Next.js library, handles the visualization of the data in chart and card form.
 * The embedded system will be written in C/C++ and flashed onto the physical device memory.
 * Automated testing for frontend and backend is handled using V-test. Code Rabbit and Dependabot tests are shown on GitHub. Playwright testing is shown in the test_suite folder in the GitHub repository. 
 
@@ -99,6 +99,9 @@ Planned Directory Structure: As mentioned in the developer docs.
 How to Build/Test: See Getting Started at the bottom of this Readme file.
 How to release a version: Go to GitHub releases, draft a new release. This will create a new version to be tracked.
 Bug tracker (See Issues in GitHub): Next.js Bugs/ Warnings
+
+DEBUG CONSOLE: Is provided as an optional settings option on the dashboard, which can be used to troubleshoot hardware connections and
+data pipelines with the hardware device.
 
 
 ## Links
@@ -112,7 +115,7 @@ Sprint/Portfolio Backlogs: https://docs.google.com/document/d/16ZOI3ZHT498dK0WAm
 __________________________________________________
 
 * Frontend | Next.js, TailwindCSS
-* Backend & DB | Go, PostgreSQL with Drizzle ORM, NeonDB
+* Backend & DB | Go, PostgreSQL, Drizzle ORM, NeonDB
 * Auth/Proxy | NextAuth.js
 * Hardware | Flashed in C with GO server connection, Antenna integrated GPS module SKM52, XIAO RP2040, Disc Golf Driver
 
