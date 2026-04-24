@@ -1,4 +1,4 @@
-package main
+package handlers
 
 import (
 	"database/sql"
@@ -21,25 +21,25 @@ func CreateSession(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID") // Set by auth middleware
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
 		// Read protobuf data from request body
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
 			return
 		}
 
 		req := &pb.SessionRequest{}
 		if err := proto.Unmarshal(body, req); err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
 			return
 		}
 
 		if req.DeviceId == "" {
-			sendProtobufError(c, http.StatusBadRequest, "device_id is required")
+			SendProtobufError(c, http.StatusBadRequest, "device_id is required")
 			return
 		}
 
@@ -53,7 +53,7 @@ func CreateSession(db *sql.DB) gin.HandlerFunc {
 
 		if err != nil {
 			log.Printf("[CreateSession] Database insert failed: %v", err)
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to create session")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to create session")
 			return
 		}
 
@@ -67,7 +67,7 @@ func CreateSession(db *sql.DB) gin.HandlerFunc {
 			CreatedAt:  timestamppb.New(now),
 		}
 
-		sendProtobufResponse(c, http.StatusCreated, resp)
+		SendProtobufResponse(c, http.StatusCreated, resp)
 	}
 }
 
@@ -75,7 +75,7 @@ func EndSession(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
@@ -89,7 +89,7 @@ func EndSession(db *sql.DB) gin.HandlerFunc {
 		`, "ended", endedAt, sessionID, userID)
 
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to end session")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to end session")
 			return
 		}
 
@@ -98,7 +98,7 @@ func EndSession(db *sql.DB) gin.HandlerFunc {
 			EndedAt: timestamppb.New(endedAt),
 		}
 
-		sendProtobufResponse(c, http.StatusOK, resp)
+		SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
 
@@ -106,7 +106,7 @@ func GetActiveSessions(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
@@ -119,7 +119,7 @@ func GetActiveSessions(db *sql.DB) gin.HandlerFunc {
 
 		if err != nil {
 			log.Printf("[GetActiveSessions] Database query failed: %v", err)
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch sessions")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to fetch sessions")
 			return
 		}
 		defer rows.Close()
@@ -161,7 +161,7 @@ func GetActiveSessions(db *sql.DB) gin.HandlerFunc {
 			Sessions: sessions,
 		}
 
-		sendProtobufResponse(c, http.StatusOK, resp)
+		SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
 
@@ -171,7 +171,7 @@ func GetUserDiscs(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
@@ -184,7 +184,7 @@ func GetUserDiscs(db *sql.DB) gin.HandlerFunc {
 
 		if err != nil {
 			log.Printf("[GetUserDiscs] Database query failed: %v", err)
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch discs")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to fetch discs")
 			return
 		}
 		defer rows.Close()
@@ -221,7 +221,7 @@ func GetUserDiscs(db *sql.DB) gin.HandlerFunc {
 			Discs: discs,
 		}
 
-		sendProtobufResponse(c, http.StatusOK, resp)
+		SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
 
@@ -229,30 +229,30 @@ func CreateDisc(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
 		// Read protobuf data from request body
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
 			return
 		}
 
 		req := &pb.DiscRequest{}
 		if err := proto.Unmarshal(body, req); err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
 			return
 		}
 
 		if req.Name == "" || req.Type == "" || req.Color == "" {
-			sendProtobufError(c, http.StatusBadRequest, "name, type, and color are required")
+			SendProtobufError(c, http.StatusBadRequest, "name, type, and color are required")
 			return
 		}
 
 		if req.Weight < 100 || req.Weight > 250 {
-			sendProtobufError(c, http.StatusBadRequest, "weight must be between 100 and 250")
+			SendProtobufError(c, http.StatusBadRequest, "weight must be between 100 and 250")
 			return
 		}
 
@@ -265,7 +265,7 @@ func CreateDisc(db *sql.DB) gin.HandlerFunc {
 		`, discID, userID, req.Name, req.Type, req.Weight, req.Color, now)
 
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to create disc")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to create disc")
 			return
 		}
 
@@ -279,7 +279,7 @@ func CreateDisc(db *sql.DB) gin.HandlerFunc {
 			CreatedAt: timestamppb.New(now),
 		}
 
-		sendProtobufResponse(c, http.StatusCreated, resp)
+		SendProtobufResponse(c, http.StatusCreated, resp)
 	}
 }
 
@@ -287,7 +287,7 @@ func DeleteDisc(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
@@ -299,7 +299,7 @@ func DeleteDisc(db *sql.DB) gin.HandlerFunc {
 		`, discID, userID)
 
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to delete disc")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to delete disc")
 			return
 		}
 
@@ -308,7 +308,7 @@ func DeleteDisc(db *sql.DB) gin.HandlerFunc {
 			Id:      discID,
 		}
 
-		sendProtobufResponse(c, http.StatusOK, resp)
+		SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
 
@@ -318,25 +318,25 @@ func SaveThrow(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
 		// Read protobuf data from request body
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
 			return
 		}
 
 		req := &pb.ThrowRequest{}
 		if err := proto.Unmarshal(body, req); err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
 			return
 		}
 
 		if req.SessionId == "" || req.DiscId == "" {
-			sendProtobufError(c, http.StatusBadRequest, "session_id and disc_id are required")
+			SendProtobufError(c, http.StatusBadRequest, "session_id and disc_id are required")
 			return
 		}
 
@@ -362,7 +362,7 @@ func SaveThrow(db *sql.DB) gin.HandlerFunc {
 		)
 
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to save throw")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to save throw")
 			return
 		}
 
@@ -371,7 +371,7 @@ func SaveThrow(db *sql.DB) gin.HandlerFunc {
 			Id:      throwID,
 		}
 
-		sendProtobufResponse(c, http.StatusCreated, resp)
+		SendProtobufResponse(c, http.StatusCreated, resp)
 	}
 }
 
@@ -379,7 +379,7 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
@@ -414,7 +414,7 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 		}
 
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch throws")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to fetch throws")
 			return
 		}
 		defer rows.Close()
@@ -446,7 +446,7 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 				&timestamp,
 				&maxRpm,
 			); err != nil {
-				sendProtobufError(c, http.StatusInternalServerError, "Failed to read throw rows")
+				SendProtobufError(c, http.StatusInternalServerError, "Failed to read throw rows")
 				return
 			}
 
@@ -469,11 +469,11 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 		}
 
 		if err := rows.Err(); err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed during throw iteration")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed during throw iteration")
 			return
 		}
 
-		sendProtobufResponse(c, http.StatusOK, &pb.GetThrowsResponse{Throws: throws})
+		SendProtobufResponse(c, http.StatusOK, &pb.GetThrowsResponse{Throws: throws})
 	}
 }
 
@@ -481,13 +481,13 @@ func DeleteThrow(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
 		throwID := c.Param("id")
 		if throwID == "" {
-			sendProtobufError(c, http.StatusBadRequest, "Throw ID is required")
+			SendProtobufError(c, http.StatusBadRequest, "Throw ID is required")
 			return
 		}
 
@@ -496,22 +496,22 @@ func DeleteThrow(db *sql.DB) gin.HandlerFunc {
 			WHERE id = $1 AND user_id = $2
 		`, throwID, userID)
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to delete throw")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to delete throw")
 			return
 		}
 
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to validate deletion")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to validate deletion")
 			return
 		}
 
 		if rowsAffected == 0 {
-			sendProtobufError(c, http.StatusNotFound, "Throw not found")
+			SendProtobufError(c, http.StatusNotFound, "Throw not found")
 			return
 		}
 
-		sendProtobufResponse(c, http.StatusOK, &pb.ThrowResponse{Message: "Throw deleted", Id: throwID})
+		SendProtobufResponse(c, http.StatusOK, &pb.ThrowResponse{Message: "Throw deleted", Id: throwID})
 	}
 }
 
@@ -521,7 +521,7 @@ func GetUserSettings(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
@@ -557,12 +557,12 @@ func GetUserSettings(db *sql.DB) gin.HandlerFunc {
 				UpdatedAt:            timestamppb.New(now),
 			}
 
-			sendProtobufResponse(c, http.StatusOK, resp)
+			SendProtobufResponse(c, http.StatusOK, resp)
 			return
 		}
 
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch settings")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to fetch settings")
 			return
 		}
 
@@ -577,7 +577,7 @@ func GetUserSettings(db *sql.DB) gin.HandlerFunc {
 			UpdatedAt:            timestamppb.New(updatedAt),
 		}
 
-		sendProtobufResponse(c, http.StatusOK, resp)
+		SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
 
@@ -585,20 +585,20 @@ func UpdateUserSettings(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
+			SendProtobufError(c, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
 
 		// Read protobuf data from request body
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to read request body")
 			return
 		}
 
 		req := &pb.UserSettingsRequest{}
 		if err := proto.Unmarshal(body, req); err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
+			SendProtobufError(c, http.StatusBadRequest, "Failed to unmarshal protobuf")
 			return
 		}
 
@@ -617,7 +617,7 @@ func UpdateUserSettings(db *sql.DB) gin.HandlerFunc {
 		`, userID, req.BagLocationLat, req.BagLocationLon, req.PreferredUnit, req.NotificationsEnabled, req.AutoSaveEnabled, now)
 
 		if err != nil {
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to update settings")
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to update settings")
 			return
 		}
 
@@ -626,13 +626,13 @@ func UpdateUserSettings(db *sql.DB) gin.HandlerFunc {
 			EndedAt: timestamppb.New(now),
 		}
 
-		sendProtobufResponse(c, http.StatusOK, resp)
+		SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
 
 // Helper functions for protobuf serialization
 
-func sendProtobufResponse(c *gin.Context, statusCode int, message proto.Message) {
+func SendProtobufResponse(c *gin.Context, statusCode int, message proto.Message) {
 	data, err := proto.Marshal(message)
 	if err != nil {
 		log.Printf("Error marshaling protobuf: %v", err)
@@ -644,7 +644,7 @@ func sendProtobufResponse(c *gin.Context, statusCode int, message proto.Message)
 	c.Data(statusCode, "application/protobuf", data)
 }
 
-func sendProtobufError(c *gin.Context, statusCode int, message string) {
+func SendProtobufError(c *gin.Context, statusCode int, message string) {
 	errResp := &pb.ErrorResponse{
 		Error: message,
 		Code:  int32(statusCode),

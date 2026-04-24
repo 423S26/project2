@@ -69,7 +69,52 @@ export default function LiveTracker({
 	// Track when BLE last delivered data so we can skip API overwrites
 	const bleLastPingRef = useRef<number>(0);
 
-	// Subscribe to pipeline log updates
+        const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
+        const [userHeading, setUserHeading] = useState<number | null>(null);
+
+        // Track user geolocation for relative distance
+        useEffect(() => {
+                if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+                        const watchId = navigator.geolocation.watchPosition(
+                                (pos) => {
+                                        setUserLocation({
+                                                lat: pos.coords.latitude,
+                                                lon: pos.coords.longitude,
+                                        });
+                                },
+                                (err) => console.warn('Geolocation error:', err.message),
+                                { enableHighAccuracy: true, maximumAge: 5000 }
+                        );
+                        return () => navigator.geolocation.clearWatch(watchId);
+                }
+        }, []);
+
+        // Track user device orientation
+        useEffect(() => {
+                const handleOrientation = (event: any) => {
+                        let heading = null;
+                        if (typeof event.webkitCompassHeading !== "undefined") {
+                                heading = event.webkitCompassHeading;
+                        } else if (event.alpha !== null) {
+                                // Approximate heading (absolute)
+                                heading = 360 - event.alpha;
+                        }
+                        if (heading !== null) {
+                                setUserHeading(heading);
+                        }
+                };
+                
+                if (typeof window !== "undefined") {
+                        window.addEventListener("deviceorientationabsolute", handleOrientation as any);
+                        window.addEventListener("deviceorientation", handleOrientation as any);
+                }
+                return () => {
+                        if (typeof window !== "undefined") {
+                                window.removeEventListener("deviceorientationabsolute", handleOrientation as any);
+                                window.removeEventListener("deviceorientation", handleOrientation as any);
+                        }
+                };
+        }, []);
 	useEffect(() => {
 		const unsub = onPipelineLog((_entry, stats) => {
 			setPipeStats({ ...stats });
@@ -337,6 +382,35 @@ export default function LiveTracker({
 		);
 	}
 
+	// Calculate distance and bearing if we have both locations
+	let distanceToDisc: number | null = null;
+	let bearingToDisc: number | null = null;
+	let relativeBearing: number | null = null;
+	const activePing = lastBlePing || lastPing;
+	if (userLocation && activePing && activePing.lat !== 0 && activePing.lon !== 0) {
+		const R = 6371e3; // Earth radius in meters
+		const lat1 = (userLocation.lat * Math.PI) / 180;
+		const lat2 = (activePing.lat * Math.PI) / 180;
+		const dLat = ((activePing.lat - userLocation.lat) * Math.PI) / 180;
+		const dLon = ((activePing.lon - userLocation.lon) * Math.PI) / 180;
+
+		const a =
+			Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+			Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+		const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+		distanceToDisc = R * c;
+
+		const y = Math.sin(dLon) * Math.cos(lat2);
+		const x =
+			Math.cos(lat1) * Math.sin(lat2) -
+			Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+		const brng = Math.atan2(y, x);
+		bearingToDisc = ((brng * 180) / Math.PI + 360) % 360;
+		if (userHeading !== null) {
+			relativeBearing = bearingToDisc - userHeading;
+		}
+	}
+
 	// Color map for pipeline stages
 	const stageColor = (stage: string) => {
 		const layer = stage.split(':')[0];
@@ -402,7 +476,18 @@ export default function LiveTracker({
 
 								{/* ── GPS Data (from raw BLE fields) ── */}
 								<div className="pb-1.5 border-b border-slate-700/30">
-									<div className="text-[10px] text-green-500/70 mb-0.5">GPS</div>
+									<div className="flex justify-between items-center mb-0.5">
+										<div className="text-[10px] text-green-500/70">GPS</div>
+										{distanceToDisc !== null && (
+											<div className="text-[10px] text-green-400">
+												Dist: <span className="font-bold">{distanceToDisc.toFixed(1)}m</span> {relativeBearing !== null && (
+													<span className="ml-1" style={{ display: 'inline-block', transform: `rotate(${Math.round(relativeBearing)}deg)` }}>
+														↑
+													</span>
+												)}
+											</div>
+										)}
+									</div>
 									<div className="grid grid-cols-4 gap-x-4 gap-y-0.5">
 										<div>lat: <span className="text-green-300">{lastBlePing.lat.toFixed(6)}</span></div>
 										<div>lon: <span className="text-green-300">{lastBlePing.lon.toFixed(6)}</span></div>
@@ -442,7 +527,18 @@ export default function LiveTracker({
 									<div>wobble: <span className={`${lastPing.wobble > 0.1 ? 'text-orange-300' : 'text-gray-500'}`}>{lastPing.wobble.toFixed(3)}g</span></div>
 								</div>
 								<div className="pb-1.5 border-b border-slate-700/30">
-									<div className="text-[10px] text-green-500/70 mb-0.5">GPS</div>
+									<div className="flex justify-between items-center mb-0.5">
+										<div className="text-[10px] text-green-500/70">GPS</div>
+										{distanceToDisc !== null && (
+											<div className="text-[10px] text-green-400">
+												Dist: <span className="font-bold">{distanceToDisc.toFixed(1)}m</span> {relativeBearing !== null && (
+													<span className="ml-1" style={{ display: 'inline-block', transform: `rotate(${Math.round(relativeBearing)}deg)` }}>
+														↑
+													</span>
+												)}
+											</div>
+										)}
+									</div>
 									<div className="grid grid-cols-4 gap-x-4 gap-y-0.5">
 										<div>lat: <span className="text-green-300">{lastPing.lat.toFixed(6)}</span></div>
 										<div>lon: <span className="text-green-300">{lastPing.lon.toFixed(6)}</span></div>

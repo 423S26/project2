@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"project2/disc-tracking-software/handlers"
 	"project2/disc-tracking-software/pb"
 	"runtime"
 	"strings"
@@ -288,42 +289,42 @@ func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "missing authenticated user")
+			handlers.SendProtobufError(c, http.StatusUnauthorized, "missing authenticated user")
 			return
 		}
 
 		// Read protobuf data from request body
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "failed to read request body")
+			handlers.SendProtobufError(c, http.StatusBadRequest, "failed to read request body")
 			return
 		}
 
 		var batch pb.SyncBatch
 		if err := proto.Unmarshal(body, &batch); err != nil {
-			sendProtobufError(c, http.StatusBadRequest, "failed to unmarshal protobuf")
+			handlers.SendProtobufError(c, http.StatusBadRequest, "failed to unmarshal protobuf")
 			return
 		}
 
 		if len(batch.GetPings()) == 0 {
-			sendProtobufError(c, http.StatusBadRequest, "batch contains no pings")
+			handlers.SendProtobufError(c, http.StatusBadRequest, "batch contains no pings")
 			return
 		}
 
 		deviceID := strings.TrimSpace(batch.GetPings()[0].GetDeviceId())
 		if deviceID == "" {
-			sendProtobufError(c, http.StatusBadRequest, "first ping is missing device_id")
+			handlers.SendProtobufError(c, http.StatusBadRequest, "first ping is missing device_id")
 			return
 		}
 
 		owned, err := verifyDeviceOwnership(db, userID, deviceID)
 		if err != nil {
 			log.Printf("[ProcessTelemetry] ownership query failed: %v", err)
-			sendProtobufError(c, http.StatusInternalServerError, "failed to validate device ownership")
+			handlers.SendProtobufError(c, http.StatusInternalServerError, "failed to validate device ownership")
 			return
 		}
 		if !owned {
-			sendProtobufError(c, http.StatusForbidden, "user does not own device")
+			handlers.SendProtobufError(c, http.StatusForbidden, "user does not own device")
 			return
 		}
 
@@ -337,7 +338,7 @@ func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 			processedPings++
 		}
 
-		sendProtobufResponse(c, http.StatusOK, &pb.TelemetryResponse{
+		handlers.SendProtobufResponse(c, http.StatusOK, &pb.TelemetryResponse{
 			Message:        "Telemetry uploaded",
 			ProcessedCount: int32(processedPings),
 		})
@@ -400,24 +401,24 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			sendProtobufError(c, http.StatusUnauthorized, "missing authenticated user")
+			handlers.SendProtobufError(c, http.StatusUnauthorized, "missing authenticated user")
 			return
 		}
 
 		deviceId := c.Query("device_id")
 		if deviceId == "" {
-			sendProtobufError(c, http.StatusBadRequest, "device_id parameter required")
+			handlers.SendProtobufError(c, http.StatusBadRequest, "device_id parameter required")
 			return
 		}
 
 		owned, err := verifyDeviceOwnership(db, userID, deviceId)
 		if err != nil {
 			log.Printf("[GetTelemetry] ownership query failed: %v", err)
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to validate device ownership")
+			handlers.SendProtobufError(c, http.StatusInternalServerError, "Failed to validate device ownership")
 			return
 		}
 		if !owned {
-			sendProtobufError(c, http.StatusForbidden, "user does not own device")
+			handlers.SendProtobufError(c, http.StatusForbidden, "user does not own device")
 			return
 		}
 
@@ -438,7 +439,7 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 
 		if err != nil {
 			log.Printf("[GetTelemetry] Database query failed: %v", err)
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch telemetry")
+			handlers.SendProtobufError(c, http.StatusInternalServerError, "Failed to fetch telemetry")
 			return
 		}
 		defer rows.Close()
@@ -475,7 +476,7 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 
 		if err := rows.Err(); err != nil {
 			log.Printf("[GetTelemetry] Row iteration failed: %v", err)
-			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch telemetry")
+			handlers.SendProtobufError(c, http.StatusInternalServerError, "Failed to fetch telemetry")
 			return
 		}
 
@@ -483,11 +484,16 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 			Telemetry: telemetry,
 		}
 
-		sendProtobufResponse(c, http.StatusOK, resp)
+		handlers.SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
 
-func main() {
+var (
+	GlobalDB     *sql.DB
+	GlobalRouter *gin.Engine
+)
+
+func init() {
 	loadDotEnvFiles()
 
 	dbUrl := os.Getenv("DATABASE_URL")
@@ -497,22 +503,24 @@ func main() {
 		log.Println("Found DATABASE_URL, attempting connection...")
 	}
 
-	db, err := sql.Open("postgres", normalizeDatabaseURL(dbUrl))
+	var err error
+	GlobalDB, err = sql.Open("postgres", normalizeDatabaseURL(dbUrl))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		log.Fatalf("database ping failed: %v", err)
+	if err := GlobalDB.PingContext(pingCtx); err != nil {
+		log.Printf("database ping failed: %v", err)
 	}
 
-	r := gin.Default()
-	r.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
+	gin.SetMode(gin.ReleaseMode)
+	GlobalRouter = gin.Default()
+	GlobalRouter.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
 
 	// CORS middleware for local frontend development with an explicit allow list
-	r.Use(func(c *gin.Context) {
+	GlobalRouter.Use(func(c *gin.Context) {
 		allowedOrigins := map[string]bool{
 			"http://localhost:3000": true,
 			"http://127.0.0.1:3000": true,
@@ -535,7 +543,7 @@ func main() {
 	})
 
 	// Protobuf Content-Type Middleware
-	r.Use(func(c *gin.Context) {
+	GlobalRouter.Use(func(c *gin.Context) {
 		if c.GetHeader("Content-Type") == "application/protobuf" {
 			c.Header("Content-Type", "application/protobuf")
 		}
@@ -550,19 +558,19 @@ func main() {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			if jwtSecret == "" {
-				sendProtobufError(c, http.StatusUnauthorized, "JWT authentication is not configured")
+				handlers.SendProtobufError(c, http.StatusUnauthorized, "JWT authentication is not configured")
 				return
 			}
 
 			claims, err := parseAndVerifyBearerToken(authHeader, jwtSecret)
 			if err != nil {
-				sendProtobufError(c, http.StatusUnauthorized, "invalid bearer token")
+				handlers.SendProtobufError(c, http.StatusUnauthorized, "invalid bearer token")
 				return
 			}
 
 			userID := extractUserIDFromClaims(claims)
 			if strings.TrimSpace(userID) == "" {
-				sendProtobufError(c, http.StatusUnauthorized, "token missing user identifier")
+				handlers.SendProtobufError(c, http.StatusUnauthorized, "token missing user identifier")
 				return
 			}
 
@@ -574,7 +582,7 @@ func main() {
 		if allowInsecureUserID {
 			userID := strings.TrimSpace(c.GetHeader("X-User-ID"))
 			if userID == "" {
-				sendProtobufError(c, http.StatusUnauthorized, "missing X-User-ID in insecure mode")
+				handlers.SendProtobufError(c, http.StatusUnauthorized, "missing X-User-ID in insecure mode")
 				return
 			}
 			c.Set("userID", userID)
@@ -582,39 +590,41 @@ func main() {
 			return
 		}
 
-		sendProtobufError(c, http.StatusUnauthorized, "missing bearer token")
+		handlers.SendProtobufError(c, http.StatusUnauthorized, "missing bearer token")
 	}
 
 	// REST API Routes for Sessions
-	api := r.Group("/api/v1")
+	api := GlobalRouter.Group("/api/v1")
 	api.Use(authMiddleware)
 	{
 		// Session management
-		api.POST("/sessions", CreateSession(db))
-		api.PATCH("/sessions/:id/end", EndSession(db))
-		api.GET("/sessions/active", GetActiveSessions(db))
+		api.POST("/sessions", handlers.CreateSession(GlobalDB))
+		api.PATCH("/sessions/:id/end", handlers.EndSession(GlobalDB))
+		api.GET("/sessions/active", handlers.GetActiveSessions(GlobalDB))
 
 		// Disc management
-		api.GET("/discs", GetUserDiscs(db))
-		api.POST("/discs", CreateDisc(db))
-		api.DELETE("/discs/:id", DeleteDisc(db))
+		api.GET("/discs", handlers.GetUserDiscs(GlobalDB))
+		api.POST("/discs", handlers.CreateDisc(GlobalDB))
+		api.DELETE("/discs/:id", handlers.DeleteDisc(GlobalDB))
 
 		// Throw management
-		api.GET("/throws", ListThrows(db))
-		api.POST("/throws", SaveThrow(db))
-		api.DELETE("/throws/:id", DeleteThrow(db))
+		api.GET("/throws", handlers.ListThrows(GlobalDB))
+		api.POST("/throws", handlers.SaveThrow(GlobalDB))
+		api.DELETE("/throws/:id", handlers.DeleteThrow(GlobalDB))
 
 		// User settings
-		api.GET("/user/settings", GetUserSettings(db))
-		api.PATCH("/user/settings", UpdateUserSettings(db))
+		api.GET("/user/settings", handlers.GetUserSettings(GlobalDB))
+		api.PATCH("/user/settings", handlers.UpdateUserSettings(GlobalDB))
 
 		// Telemetry endpoints
-		api.POST("/telemetry/upload", ProcessTelemetry(db))
-		api.GET("/telemetry", GetTelemetry(db))
+		api.POST("/telemetry/upload", ProcessTelemetry(GlobalDB))
+		api.GET("/telemetry", GetTelemetry(GlobalDB))
 	}
+}
 
-	log.Println("Server running on :8080")
-	r.Run(":8080")
+// Handler is the Vercel serverless function entrypoint.
+func Handler(w http.ResponseWriter, r *http.Request) {
+	GlobalRouter.ServeHTTP(w, r)
 }
 
 // CONSTANT: The distance from the center of the disc to IMU chip.

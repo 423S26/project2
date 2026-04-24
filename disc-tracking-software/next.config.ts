@@ -10,9 +10,9 @@ const nextConfig: NextConfig = {
     root: configDir,
   },
   
-  experimental: {
-    optimizePackageImports: ['lucide-react'],
-  },
+experimental: {
+  optimizePackageImports: ['lucide-react'],
+},
 
   reactCompiler: true,
   images : {
