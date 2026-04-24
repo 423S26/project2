@@ -153,6 +153,7 @@ async function apiCallProtobuf<T>(
     const options: RequestInit = {
       method,
       headers: await getAuthHeaders(),
+      cache: 'no-store',
     };
 
     if (body) {

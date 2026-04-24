@@ -182,6 +182,8 @@ export async function signUpAction(prevState: AuthState | undefined, formData: F
 }
 
 export async function getUserNameAction() {
+  const { unstable_noStore: noStore } = await import("next/cache");
+  noStore();
   const { auth } = await import("@/auth");
   const session = await auth();
   return session?.user?.name || null;

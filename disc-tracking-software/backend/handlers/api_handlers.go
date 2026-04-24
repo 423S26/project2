@@ -641,15 +641,7 @@ func SendProtobufResponse(c *gin.Context, statusCode int, message proto.Message)
 	}
 
 	c.Header("Content-Type", "application/protobuf")
-	c.Data(statusCode, "application/protobuf", data)
-}
-
-func SendProtobufError(c *gin.Context, statusCode int, message string) {
-	errResp := &pb.ErrorResponse{
-		Error: message,
-		Code:  int32(statusCode),
-	}
-
+        c.Header("Cache-Control", "no-store, max-age=0")
 	data, err := proto.Marshal(errResp)
 	if err != nil {
 		c.JSON(statusCode, gin.H{"error": message})
@@ -657,5 +649,4 @@ func SendProtobufError(c *gin.Context, statusCode int, message string) {
 	}
 
 	c.Header("Content-Type", "application/protobuf")
-	c.Data(statusCode, "application/protobuf", data)
-}
+        c.Header("Cache-Control", "no-store, max-age=0")
