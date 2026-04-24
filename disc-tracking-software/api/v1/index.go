@@ -2,7 +2,7 @@
 //NOTE: ASSERTS WILL BE IMPLEMENTED INLINE
 //NOTE: Telemetry ingestion uses batched HTTP POST uploads
 
-package main
+package handler
 
 import (
 	"context"
