@@ -66,6 +66,7 @@ export interface ThrowRecord {
   distance: number;
   flight_time: number;
   exit_velocity: number;
+  max_rpm: number;
   timestamp: string;
 }
 
@@ -155,7 +156,7 @@ async function apiCallProtobuf<T>(
     };
 
     if (body) {
-      options.body = body as any;
+      options.body = Uint8Array.from(body);
     }
 
     pipelineLog('API:REQ', 'info', `${method} ${endpoint}${body ? ` (${body.length}B)` : ''}`);
@@ -177,7 +178,12 @@ async function apiCallProtobuf<T>(
               if (data.byteLength > 0) {
                 const decoder = new ProtoDecoder(new Uint8Array(data));
                 const errorMsg = decoder.decodeMessage();
-                errorMessage = errorMsg.field_1 || errorMsg.error || errorMessage;
+                const decodedField = typeof errorMsg.field_1 === 'string'
+                  ? errorMsg.field_1
+                  : typeof errorMsg.error === 'string'
+                    ? errorMsg.error
+                    : null;
+                errorMessage = decodedField ?? errorMessage;
               }
             } else if (contentType?.includes("json")) {
               const errorData = await resp.json();
@@ -398,6 +404,7 @@ function decodeThrowRecord(data: Uint8Array): ThrowRecord {
     distance: 0,
     flight_time: 0,
     exit_velocity: 0,
+    max_rpm: 0,
     timestamp: '',
   };
 
@@ -432,9 +439,12 @@ function decodeThrowRecord(data: Uint8Array): ThrowRecord {
         item.exit_velocity = decoder.decodeDouble();
         break;
       case 9:
-        item.timestamp = decodeProtoTimestamp(decoder);
-        break;
-      default:
+          item.timestamp = decodeProtoTimestamp(decoder);
+          break;
+        case 10:
+          item.max_rpm = decoder.decodeDouble();
+          break;
+        default:
         skipUnknownField(decoder, wireType);
         break;
     }
@@ -614,8 +624,7 @@ export const discAPI = {
     name: string,
     type: string,
     weight: number,
-    color: string,
-    connectionNumber?: string
+    color: string
   ): Promise<Disc> => {
     try {
       assertNotNull(name, 'name');
@@ -737,13 +746,7 @@ export const throwAPI = {
         "POST"
       );
 
-      const decoder = new ProtoDecoder(response);
-      const message = decoder.decodeString();
-      const id = decoder.decodeString();
-      assert(message.length > 0, 'Received empty message from server');
-      assert(id.length > 0, 'Received empty ID from server');
-
-      return {message, id};
+      return decodeThrowMutationResponse(response, 'save throw');
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.saveThrow');
       throw error;
@@ -775,12 +778,7 @@ export const throwAPI = {
         "DELETE"
       );
 
-      const decoder = new ProtoDecoder(response);
-      const message = decoder.decodeString();
-      const id = decoder.decodeString();
-      assert(message.length > 0, 'Received empty message from server');
-      assert(id.length > 0, 'Received empty ID from server');
-      return {message, id};
+      return decodeThrowMutationResponse(response, 'delete throw');
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.deleteThrow');
       throw error;
@@ -788,30 +786,116 @@ export const throwAPI = {
   },
 };
 
+function decodeThrowMutationResponse(response: Uint8Array, operation: string): {message: string; id: string} {
+  assert(response.length > 0, `Received empty protobuf response while attempting to ${operation}`);
+
+  const decoder = new ProtoDecoder(response);
+  const message = decoder.decodeString();
+  assert(message.length > 0, `Received empty message while attempting to ${operation}`);
+  assert(
+    decoder.getOffset() < response.length,
+    `Received truncated protobuf response while attempting to ${operation}: missing ID field`,
+  );
+
+  const id = decoder.decodeString();
+  assert(id.length > 0, `Received empty ID while attempting to ${operation}`);
+
+  return { message, id };
+}
+
+function decodeTimestampMessage(decoder: ProtoDecoder): string {
+  const length = decoder.decodeVarint();
+  const endOffset = decoder.getOffset() + length;
+  let seconds = 0;
+  let nanos = 0;
+
+  while (decoder.getOffset() < endOffset) {
+    const tag = decoder.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    if (fieldNumber === 1 && wireType === 0) {
+      seconds = decoder.decodeVarint();
+    } else if (fieldNumber === 2 && wireType === 0) {
+      nanos = decoder.decodeVarint();
+    } else if (wireType === 2) {
+      decoder.readBytes(decoder.decodeVarint());
+    } else if (wireType === 1) {
+      decoder.readBytes(8);
+    } else if (wireType === 5) {
+      decoder.readBytes(4);
+    } else {
+      decoder.decodeVarint();
+    }
+  }
+
+  return new Date(seconds * 1000 + nanos / 1000000).toISOString();
+}
+
+function decodeUserSettingsResponse(response: Uint8Array): UserSettings {
+  const decoder = new ProtoDecoder(response);
+  let id = '';
+  let userId = '';
+  let bagLocationLat: number | undefined;
+  let bagLocationLon: number | undefined;
+  let preferredUnit = 'meters';
+  let notificationsEnabled = true;
+  let autoSaveEnabled = true;
+  let updatedAt = new Date().toISOString();
+
+  while (decoder.getOffset() < response.length) {
+    const tag = decoder.decodeVarint();
+    const wireType = tag & 0x07;
+    const fieldNumber = tag >>> 3;
+
+    if (fieldNumber === 1 && wireType === 2) {
+      id = decoder.decodeString();
+    } else if (fieldNumber === 2 && wireType === 2) {
+      userId = decoder.decodeString();
+    } else if (fieldNumber === 3 && wireType === 1) {
+      bagLocationLat = decoder.decodeDouble();
+    } else if (fieldNumber === 4 && wireType === 1) {
+      bagLocationLon = decoder.decodeDouble();
+    } else if (fieldNumber === 5 && wireType === 2) {
+      preferredUnit = decoder.decodeString();
+    } else if (fieldNumber === 6 && wireType === 0) {
+      notificationsEnabled = decoder.decodeBoolean();
+    } else if (fieldNumber === 7 && wireType === 0) {
+      autoSaveEnabled = decoder.decodeBoolean();
+    } else if (fieldNumber === 8 && wireType === 2) {
+      updatedAt = decodeTimestampMessage(decoder);
+    } else if (wireType === 2) {
+      decoder.readBytes(decoder.decodeVarint());
+    } else if (wireType === 1) {
+      decoder.readBytes(8);
+    } else if (wireType === 5) {
+      decoder.readBytes(4);
+    } else {
+      decoder.decodeVarint();
+    }
+  }
+
+  assert(id.length > 0, 'Received empty settings ID from server');
+  assert(userId.length > 0, 'Received empty user ID from server');
+
+  return {
+    id,
+    user_id: userId,
+    bag_location_lat: bagLocationLat,
+    bag_location_lon: bagLocationLon,
+    preferred_unit: preferredUnit,
+    notifications_enabled: notificationsEnabled,
+    auto_save_enabled: autoSaveEnabled,
+    updated_at: updatedAt,
+  };
+}
+
 // User Settings API
 export const userSettingsAPI = {
   getSettings: async (): Promise<UserSettings> => {
     try {
       const response = await apiCallProtobuf<Uint8Array>("/user/settings");
-
-      const decoder = new ProtoDecoder(response);
-      const id = decoder.decodeString();
-      const userId = decoder.decodeString();
-      const preferredUnit = decoder.decodeString();
-      const notificationsEnabled = decoder.decodeBoolean();
-      const autoSaveEnabled = decoder.decodeBoolean();
-
-      assert(id.length > 0, 'Received empty settings ID from server');
-      assert(userId.length > 0, 'Received empty user ID from server');
-
-      return {
-        id,
-        user_id: userId,
-        preferred_unit: preferredUnit,
-        notifications_enabled: notificationsEnabled,
-        auto_save_enabled: autoSaveEnabled,
-        updated_at: new Date().toISOString(),
-      };
+      return decodeUserSettingsResponse(response);
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'userSettingsAPI.getSettings');
       throw error;
@@ -824,7 +908,7 @@ export const userSettingsAPI = {
     preferredUnit?: string;
     notificationsEnabled?: boolean;
     autoSaveEnabled?: boolean;
-  }): Promise<{message: string}> => {
+  }): Promise<UserSettings> => {
     try {
       // Validate optional GPS coordinates if provided
       if (settings.bagLocationLat !== undefined) {
@@ -849,12 +933,7 @@ export const userSettingsAPI = {
         encoded,
         "PATCH"
       );
-
-      const decoder = new ProtoDecoder(response);
-      const message = decoder.decodeString();
-      assert(message.length > 0, 'Received empty message from server');
-
-      return {message};
+      return decodeUserSettingsResponse(response);
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'userSettingsAPI.updateSettings');
       throw error;
@@ -862,57 +941,3 @@ export const userSettingsAPI = {
   },
 };
 
-// User API
-export const userAPI = {
-  getCurrentUser: async () => {
-    try {
-      const response = await apiCallProtobuf("/user");
-      const decoder = new ProtoDecoder(response as Uint8Array);
-      
-      const id = decoder.decodeString();
-      const email = decoder.decodeString();
-      const name = decoder.decodeString();
-
-      assert(id.length > 0, 'Received empty user ID from server');
-      assert(email.length > 0, 'Received empty email from server');
-
-      return {id, email, name};
-    } catch (error) {
-      logError(error instanceof Error ? error : new Error(String(error)), 'userAPI.getCurrentUser');
-      throw error;
-    }
-  },
-
-  updateProfile: async (userData: { fullName?: string; email?: string }) => {
-    try {
-      if (userData.email !== undefined) {
-        assertType(userData.email, 'string', 'email');
-        assert(userData.email.includes('@'), 'Invalid email format');
-      }
-      if (userData.fullName !== undefined) {
-        assertType(userData.fullName, 'string', 'fullName');
-        assert(userData.fullName.length > 0, 'Full name is empty');
-      }
-
-      const encoded = ProtoEncoder.encodeObject({
-        full_name: userData.fullName,
-        email: userData.email,
-      });
-
-      const response = await apiCallProtobuf<Uint8Array>(
-        "/user",
-        encoded,
-        "PATCH"
-      );
-
-      const decoder = new ProtoDecoder(response);
-      const message = decoder.decodeString();
-      assert(message.length > 0, 'Received empty message from server');
-
-      return {message};
-    } catch (error) {
-      logError(error instanceof Error ? error : new Error(String(error)), 'userAPI.updateProfile');
-      throw error;
-    }
-  },
-};

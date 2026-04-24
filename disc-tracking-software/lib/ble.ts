@@ -1,4 +1,4 @@
-import { encodeMessage, decodePing, encodeHardwarePing, encodeSyncBatch, PingData } from './pb/codec';
+import { decodePing, encodeHardwarePing, encodeSyncBatch, PingData, splitPingFrames } from './pb/codec';
 import { getClientAuthHeaders } from './auth-headers';
 import { FirmwareConnectionError, logError } from './errors';
 
@@ -129,8 +129,6 @@ export function pipelineLog(
       break;
     case 'BLE:RX':
       pipelineStats.rxCount++;
-      pipelineStats.decodeCount++;
-      pipelineStats.encodeCount++;
       pipelineStats.lastRxAt = entry.timestamp;
       break;
     case 'DECODE:PROTO':
@@ -252,6 +250,13 @@ export class BLEManager {
   private throwActive = false;
   private pingListeners: Array<(ping: PingData) => void> = [];
   private onSyncStatusCallback?: (status: 'idle' | 'success' | 'error') => void;
+  private readonly BLE_CHUNK_SIZE = 20;
+  private readonly FRAME_IDLE_FLUSH_MS = 40;
+  private readonly FRAGMENT_STALE_RESET_MS = 2000;
+  private readonly MAX_FRAME_BYTES = 2048;
+  private rxFrameBuffer: number[] = [];
+  private frameFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private fragmentStaleTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
   private readonly PENDING_BATCHES_KEY = 'pendingTelemetryBatchesV1';
@@ -331,6 +336,7 @@ export class BLEManager {
       pipelineLog('BLE:CONN', 'warn', 'Disconnecting…');
       this.connection.disconnect();
     }
+    this.resetRxAssembler();
   }
 
   onPing(callback: (ping: PingData) => void): () => void {
@@ -360,64 +366,185 @@ export class BLEManager {
       const target = event.target as { value?: DataView };
       if (!target.value) return;
 
-      const data = new Uint8Array(target.value.buffer);
-      const hexStr = Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      // DataView may reference a larger backing buffer. Respect byteOffset/byteLength
+      // so we only consume the current BLE notification payload.
+      const chunk = new Uint8Array(target.value.buffer, target.value.byteOffset, target.value.byteLength);
+      this.appendChunk(chunk);
 
-      const ping = decodePing(data);
-      // Stamp device_id from the connected/synced device
-      if (!ping.device_id) {
-        ping.device_id = this.connectedDeviceId;
-      }
-
-      // Full decoded field map for debug console (attached as expandable data)
-      const decodedFields: Record<string, string | number | boolean> = {
-        device_id: ping.device_id,
-        lat: ping.lat,
-        lon: ping.lon,
-        alt: ping.alt,
-        speed_mps: ping.speed_mps,
-        heading: ping.heading,
-        hdop: ping.hdop,
-        sats: ping.sats,
-        temp_c: ping.temp_c,
-        accel_x: ping.accel_x,
-        accel_y: ping.accel_y,
-        accel_z: ping.accel_z,
-        gyro_x: ping.gyro_x,
-        gyro_y: ping.gyro_y,
-        gyro_z: ping.gyro_z,
-        timestamp: ping.timestamp,
-        batt_pct: ping.batt_pct,
-      };
-
-      // Single compact log line per ping with GPS + sensor summary
-      const gps = ping.lat !== 0 || ping.lon !== 0
-        ? `GPS(${ping.lat.toFixed(6)},${ping.lon.toFixed(6)},${ping.alt.toFixed(0)}m sats=${ping.sats})`
-        : 'GPS(no fix)';
-      const imu = `IMU(a=${ping.accel_x.toFixed(1)},${ping.accel_y.toFixed(1)},${ping.accel_z.toFixed(1)} g=${ping.gyro_x.toFixed(0)},${ping.gyro_y.toFixed(0)},${ping.gyro_z.toFixed(0)})`;
-
-      pipelineLog(
-        'BLE:RX', 'info',
-        `${data.length}B ${gps} ${imu} bat=${ping.batt_pct}%`,
-        hexStr,
-        decodedFields,
-      );
-
-      // Pre-encode to hardware.proto format for validation (no separate log)
-      encodeHardwarePing(ping);
-
-      if (this.throwActive) {
-        this.pingBuffer.push(ping);
-      }
-
-      for (const listener of this.pingListeners) {
-        listener(ping);
+      // Firmware streams protobuf frames over 20-byte BLE notifications.
+      // A short chunk usually marks frame end; exact-multiple frames are flushed on idle.
+      if (chunk.length < this.BLE_CHUNK_SIZE) {
+        this.flushAssembledFrame();
+      } else {
+        this.scheduleFrameFlush();
       }
 
     } catch (error) {
       pipelineLog('DECODE:PROTO', 'error', `${(error as Error).message}`);
       logError(error instanceof Error ? error : new Error(String(error)), 'handlePingNotification');
     }
+  }
+
+  private appendChunk(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+
+    this.clearFragmentStaleTimer();
+
+    for (const b of chunk) {
+      this.rxFrameBuffer.push(b);
+    }
+
+    if (this.rxFrameBuffer.length > this.MAX_FRAME_BYTES) {
+      pipelineLog(
+        'DECODE:PROTO',
+        'warn',
+        `RX frame exceeded ${this.MAX_FRAME_BYTES}B; resetting assembler to prevent overflow`,
+      );
+      this.resetRxAssembler();
+    }
+  }
+
+  private scheduleFrameFlush(): void {
+    if (this.frameFlushTimer) {
+      clearTimeout(this.frameFlushTimer);
+    }
+    this.frameFlushTimer = setTimeout(() => {
+      this.flushAssembledFrame();
+    }, this.FRAME_IDLE_FLUSH_MS);
+  }
+
+  private clearFrameFlushTimer(): void {
+    if (!this.frameFlushTimer) return;
+    clearTimeout(this.frameFlushTimer);
+    this.frameFlushTimer = null;
+  }
+
+  private scheduleFragmentStaleReset(): void {
+    this.clearFragmentStaleTimer();
+    if (this.rxFrameBuffer.length === 0) return;
+
+    this.fragmentStaleTimer = setTimeout(() => {
+      if (this.rxFrameBuffer.length === 0) {
+        this.fragmentStaleTimer = null;
+        return;
+      }
+
+      pipelineLog(
+        'DECODE:PROTO',
+        'warn',
+        `Discarding stale partial protobuf frame after ${this.FRAGMENT_STALE_RESET_MS}ms (${this.rxFrameBuffer.length}B)`
+      );
+      this.resetRxAssembler();
+    }, this.FRAGMENT_STALE_RESET_MS);
+  }
+
+  private clearFragmentStaleTimer(): void {
+    if (!this.fragmentStaleTimer) return;
+    clearTimeout(this.fragmentStaleTimer);
+    this.fragmentStaleTimer = null;
+  }
+
+  private resetRxAssembler(): void {
+    this.clearFrameFlushTimer();
+    this.clearFragmentStaleTimer();
+    this.rxFrameBuffer = [];
+  }
+
+  private flushAssembledFrame(): void {
+    this.clearFrameFlushTimer();
+    if (this.rxFrameBuffer.length === 0) return;
+
+    const data = new Uint8Array(this.rxFrameBuffer);
+    const { frames, remainder } = splitPingFrames(data);
+    this.rxFrameBuffer = Array.from(remainder);
+
+    for (const frame of frames) {
+      this.processPingFrame(frame);
+    }
+
+    if (frames.length === 0 && remainder.length === data.length && remainder.length > 0) {
+      pipelineLog('DECODE:PROTO', 'warn', `Holding ${remainder.length}B awaiting a complete protobuf frame`);
+      this.scheduleFragmentStaleReset();
+      return;
+    }
+
+    if (remainder.length > 0) {
+      pipelineLog('DECODE:PROTO', 'info', `Holding ${remainder.length}B trailing fragment for the next BLE payload`);
+      this.scheduleFragmentStaleReset();
+      return;
+    }
+
+    this.clearFragmentStaleTimer();
+  }
+
+  private processPingFrame(data: Uint8Array): void {
+    const hexStr = Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+    let ping: PingData;
+    try {
+      ping = decodePing(data);
+    } catch (error) {
+      pipelineLog('DECODE:PROTO', 'warn', `Dropped invalid frame (${data.length}B)`);
+      logError(error instanceof Error ? error : new Error(String(error)), 'processPingFrame.decodePing');
+      return;
+    }
+
+    if (!this.isLikelyCompletePing(ping)) {
+      pipelineLog('DECODE:PROTO', 'warn', `Dropped partial frame (${data.length}B) without timestamp`);
+      return;
+    }
+
+    if (!ping.device_id) {
+      ping.device_id = this.connectedDeviceId;
+    }
+
+    const decodedFields: Record<string, string | number | boolean> = {
+      device_id: ping.device_id,
+      lat: ping.lat,
+      lon: ping.lon,
+      alt: ping.alt,
+      speed_mps: ping.speed_mps,
+      heading: ping.heading,
+      hdop: ping.hdop,
+      sats: ping.sats,
+      temp_c: ping.temp_c,
+      accel_x: ping.accel_x,
+      accel_y: ping.accel_y,
+      accel_z: ping.accel_z,
+      gyro_x: ping.gyro_x,
+      gyro_y: ping.gyro_y,
+      gyro_z: ping.gyro_z,
+      timestamp: ping.timestamp,
+      batt_pct: ping.batt_pct,
+    };
+
+    const gps = ping.lat !== 0 || ping.lon !== 0
+      ? `GPS(${ping.lat.toFixed(6)},${ping.lon.toFixed(6)},${ping.alt.toFixed(0)}m sats=${ping.sats})`
+      : 'GPS(no fix)';
+    const imu = `IMU(a=${ping.accel_x.toFixed(1)},${ping.accel_y.toFixed(1)},${ping.accel_z.toFixed(1)} g=${ping.gyro_x.toFixed(0)},${ping.gyro_y.toFixed(0)},${ping.gyro_z.toFixed(0)})`;
+
+    pipelineLog(
+      'BLE:RX', 'info',
+      `${data.length}B ${gps} ${imu} bat=${ping.batt_pct}%`,
+      hexStr,
+      decodedFields,
+    );
+
+    encodeHardwarePing(ping);
+
+    if (this.throwActive) {
+      this.pingBuffer.push(ping);
+    }
+
+    for (const listener of this.pingListeners) {
+      listener(ping);
+    }
+  }
+
+  private isLikelyCompletePing(ping: PingData): boolean {
+    // Firmware should always set timestamp. Using it as a guard prevents
+    // partial fragment decodes from propagating null/default telemetry values.
+    return Number.isFinite(ping.timestamp) && ping.timestamp > 0;
   }
 
   private enqueueCurrentThrow(): void {
@@ -481,7 +608,7 @@ export class BLEManager {
   private async getAuthHeaders(): Promise<HeadersInit> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/protobuf',
-      'Accept': 'application/json',
+	  'Accept': 'application/protobuf',
     };
 
     return getClientAuthHeaders(headers);

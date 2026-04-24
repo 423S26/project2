@@ -18,12 +18,6 @@ export const signinSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
-export const updateProfileSchema = z.object({
-  fullName: z.string().min(3, "Name must be at least 3 characters"),
-  email: emailSchema,
-  image: z.string().optional(),
-});
-
 export const updatePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required"),
   newPassword: z.string().min(8, "Password must be at least 8 characters"),

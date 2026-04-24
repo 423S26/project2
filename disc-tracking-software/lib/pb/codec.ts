@@ -15,46 +15,6 @@ import {
 } from '../errors';
 
 /**
- * Encode a plain object to protobuf binary format
- * Uses a simplified varint and field encoding approach
- */
-export function encodeMessage(obj: any): Uint8Array {
-  try {
-    assertNotNull(obj, 'object to encode');
-    if (typeof obj !== 'object' || Array.isArray(obj)) {
-      throw new ValidationError(
-        'Expected object for encoding, got array or non-object',
-        'root',
-        obj,
-        'object'
-      );
-    }
-    return ProtoEncoder.encodeObject(obj);
-  } catch (error) {
-    logError(error instanceof Error ? error : new Error(String(error)), 'encodeMessage');
-    throw error;
-  }
-}
-
-/**
- * Decode protobuf binary data to a plain object
- */
-export function decodeMessage(data: Uint8Array): any {
-  try {
-    assertNotNull(data, 'data to decode');
-    assertType(data, 'object', 'data');
-    assert(data instanceof Uint8Array, 'Data must be Uint8Array', {receivedType: data.constructor.name});
-    assert(data.length > 0, 'Data buffer is empty');
-    
-    const decoder = new ProtoDecoder(data);
-    return decoder.decodeMessage();
-  } catch (error) {
-    logError(error instanceof Error ? error : new Error(String(error)), 'decodeMessage');
-    throw error;
-  }
-}
-
-/**
  * Decode Ping message from protobuf binary data
  */
 export function decodePing(data: Uint8Array): PingData {
@@ -130,7 +90,7 @@ export function decodePing(data: Uint8Array): PingData {
             else decoder.decodeVarint();
           }
         }
-      } catch (fieldError) {
+      } catch {
         break;
       }
     }
@@ -167,6 +127,128 @@ export function decodePing(data: Uint8Array): PingData {
   }
 }
 
+export interface PingFrameSplitResult {
+  frames: Uint8Array[];
+  remainder: Uint8Array;
+}
+
+export function splitPingFrames(data: Uint8Array): PingFrameSplitResult {
+  const frames: Uint8Array[] = [];
+
+  let frameStart = 0;
+  let offset = 0;
+  let lastFieldNumber = 0;
+  let seenFields = new Set<number>();
+
+  while (offset < data.length) {
+    const fieldStart = offset;
+    const tag = tryReadVarint(data, offset);
+
+    if (!tag) {
+      break;
+    }
+
+    const fieldNumber = tag.value >>> 3;
+    const wireType = tag.value & 0x07;
+
+    if (fieldNumber <= 0 || fieldNumber > 32 || wireType === 3 || wireType === 4 || wireType === 6 || wireType === 7) {
+      offset = fieldStart + 1;
+      frameStart = offset;
+      lastFieldNumber = 0;
+      seenFields.clear();
+      continue;
+    }
+
+    // Ping messages do not have repeated fields. If the field numbering resets or
+    // repeats, we have reached the start of the next message in the byte stream.
+    if (seenFields.has(fieldNumber) || (lastFieldNumber !== 0 && fieldNumber < lastFieldNumber)) {
+      if (fieldStart <= frameStart) {
+        offset = fieldStart + 1;
+        frameStart = offset;
+        lastFieldNumber = 0;
+        seenFields.clear();
+        continue;
+      }
+
+      frames.push(data.slice(frameStart, fieldStart));
+      frameStart = fieldStart;
+      offset = fieldStart;
+      lastFieldNumber = 0;
+      seenFields = new Set<number>();
+      continue;
+    }
+
+    const nextOffset = skipFieldValue(data, tag.nextOffset, wireType);
+      if (nextOffset === -1) {
+        offset = fieldStart + 1;
+        frameStart = offset;
+        lastFieldNumber = 0;
+        seenFields.clear();
+        continue;
+      }
+      if (nextOffset === null) {
+        break;
+      }
+
+    offset = nextOffset;
+    lastFieldNumber = fieldNumber;
+    seenFields.add(fieldNumber);
+  }
+
+  // End of stream. We keep the perfectly parsed (but incomplete as far as we know) fields in remainder.
+  // They will be prefixed to the next BLE payload and trigger the boundary detection.
+
+  return {
+    frames,
+    remainder: data.slice(frameStart),
+  };
+}
+
+function tryReadVarint(data: Uint8Array, offset: number): { value: number; nextOffset: number } | null {
+  let value = 0;
+  let shift = 0;
+  let cursor = offset;
+
+  while (cursor < data.length && shift < 70) {
+    const byte = data[cursor++];
+    value |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      return { value: value >>> 0, nextOffset: cursor };
+    }
+    shift += 7;
+  }
+
+  return null;
+}
+
+function skipFieldValue(data: Uint8Array, offset: number, wireType: number): number | null {
+  switch (wireType) {
+    case 0: {
+      const value = tryReadVarint(data, offset);
+      return value?.nextOffset ?? null;
+    }
+    case 1:
+      return offset + 8 <= data.length ? offset + 8 : null;
+    case 2: {
+      const length = tryReadVarint(data, offset);
+      if (!length) {
+          return null;
+        }
+        if (length.value > 150) {
+          return -1;
+        }
+
+      return length.nextOffset + length.value <= data.length
+        ? length.nextOffset + length.value
+        : null;
+    }
+    case 5:
+      return offset + 4 <= data.length ? offset + 4 : null;
+    default:
+      return null;
+  }
+}
+
 export interface PingData {
   device_id: string;
   lat: number;
@@ -185,6 +267,10 @@ export interface PingData {
   gyro_z: number;
   timestamp: number;
   batt_pct: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -376,8 +462,8 @@ export class ProtoEncoder {
       assertNotNull(value, 'string value');
       assertType(value, 'string', 'value');
       const encoded = new TextEncoder().encode(value);
-      assert(encoded instanceof Uint8Array, 'TextEncoder must return Uint8Array');
-      return encoded;
+      assert(ArrayBuffer.isView(encoded), 'TextEncoder must return a typed array view');
+      return Uint8Array.from(encoded);
     } catch (error) {
       throw new ProtoBufferError('String encoding failed', {
         value: value?.substring(0, 100),
@@ -449,7 +535,7 @@ export class ProtoEncoder {
   /**
    * Encode an object as a protobuf message (simplified)
    */
-  static encodeObject(obj: any): Uint8Array {
+  static encodeObject(obj: Record<string, unknown>): Uint8Array {
     try {
       assertNotNull(obj, 'object');
       
@@ -560,7 +646,7 @@ export class ProtoEncoder {
   /**
    * Encode an array
    */
-  static encodeArray(arr: any[]): Uint8Array {
+  static encodeArray(arr: unknown[]): Uint8Array {
     try {
       assertNotNull(arr, 'array');
       assert(Array.isArray(arr), 'Value must be an array', {type: typeof arr});
@@ -575,7 +661,7 @@ export class ProtoEncoder {
       for (let i = 0; i < arr.length; i++) {
         try {
           const item = arr[i];
-          if (item !== null && item !== undefined) {
+          if (isRecord(item)) {
             parts.push(this.encodeObject(item));
           }
         } catch (itemError) {
@@ -601,16 +687,18 @@ export class ProtoEncoder {
     try {
       assertNotNull(value, 'value');
       assertType(value, 'number', 'value');
+      assert(Number.isSafeInteger(value), 'Varint value must be a safe integer', { value });
+      assert(value >= 0, 'Varint value must be non-negative', { value });
 
       const buffer: number[] = [];
-      let v = value >>> 0; // Convert to unsigned 32-bit
+      let v = value;
 
       while (v >= 0x80) {
-        buffer.push((v & 0xff) | 0x80);
-        v >>>= 7;
+        buffer.push((v % 0x80) | 0x80);
+        v = Math.floor(v / 0x80);
         assert(buffer.length <= 10, 'Varint encoding exceeded maximum 10 bytes', {value});
       }
-      buffer.push(v & 0xff);
+      buffer.push(v);
 
       const result = new Uint8Array(buffer);
       assert(result.length <= 10, 'Varint must not exceed 10 bytes');
@@ -695,18 +783,22 @@ export class ProtoDecoder {
     try {
       this.assertCanRead(1);
       let value = 0;
-      let shift = 0;
+      let multiplier = 1;
       let byteCount = 0;
 
       while (this.offset < this.data.length && byteCount < 10) {
         const byte = this.data[this.offset++];
-        value |= (byte & 0x7f) << shift;
+        value += (byte & 0x7f) * multiplier;
+        assert(Number.isSafeInteger(value), 'Decoded varint exceeds safe integer range', {
+          offset: this.offset,
+          byteCount,
+        });
         
         if ((byte & 0x80) === 0) {
-          return value >>> 0; // Convert to unsigned
+          return value;
         }
         
-        shift += 7;
+        multiplier *= 0x80;
         byteCount++;
       }
 
@@ -902,9 +994,9 @@ export class ProtoDecoder {
   /**
    * Try to decode a message (simplified - mostly useful for strings)
    */
-  decodeMessage(): any {
+  decodeMessage(): Record<string, unknown> {
     try {
-      const result: any = {};
+      const result: Record<string, unknown> = {};
       let fieldNumber = 1;
       const startOffset = this.offset;
 
@@ -978,78 +1070,6 @@ export class ProtoDecoder {
   }
 }
 
-/**
- * Convert Date to protobuf Timestamp
- */
-export function dateToTimestamp(date: Date): {seconds: number; nanos: number} {
-  try {
-    assertNotNull(date, 'date');
-    assert(date instanceof Date, 'Value must be a Date instance', {
-      receivedType: typeof date,
-    });
 
-    if (!Number.isFinite(date.getTime())) {
-      throw new ValidationError(
-        'Date is invalid (time is not finite)',
-        'date',
-        date,
-        'valid Date'
-      );
-    }
 
-    const ms = date.getTime();
-    const seconds = Math.floor(ms / 1000);
-    const nanos = (ms % 1000) * 1000000;
-
-    assert(Number.isFinite(seconds), 'Seconds is not finite');
-    assert(Number.isFinite(nanos), 'Nanos is not finite');
-    assert(nanos >= 0 && nanos < 1000000000, 'Nanos out of valid range', {
-      nanos,
-    });
-
-    return {seconds, nanos};
-  } catch (error) {
-    throw new ProtoBufferError('Date to timestamp conversion failed', {
-      date: date?.toString(),
-      error: (error as Error).message,
-    });
-  }
-}
-
-/**
- * Convert protobuf Timestamp to Date
- */
-export function timestampToDate(timestamp: any): Date {
-  try {
-    if (!timestamp) {
-      console.warn('[timestampToDate] Null/undefined timestamp, returning current date');
-      return new Date();
-    }
-
-    const seconds = timestamp.seconds || 0;
-    const nanos = timestamp.nanos || 0;
-
-    assertType(seconds, 'number', 'seconds');
-    assertType(nanos, 'number', 'nanos');
-
-    assert(Number.isFinite(seconds), 'Seconds is not finite', {seconds});
-    assert(Number.isFinite(nanos), 'Nanos is not finite', {nanos});
-    assert(nanos >= 0 && nanos < 1000000000, 'Nanos out of valid range', {
-      nanos,
-      max: 999999999,
-    });
-
-    const ms = seconds * 1000 + nanos / 1000000;
-    const date = new Date(ms);
-
-    assert(date instanceof Date, 'Failed to create Date object');
-    assert(Number.isFinite(date.getTime()), 'Resulting date is invalid');
-
-    return date;
-  } catch (error) {
-    logError(error instanceof Error ? error : new Error(String(error)), 'timestampToDate');
-    // Return current date as fallback
-    return new Date();
-  }
-}
 

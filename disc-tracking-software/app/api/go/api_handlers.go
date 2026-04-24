@@ -395,7 +395,7 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 				COALESCE(t.distance, 0),
 				COALESCE(t.flight_time, 0),
 				COALESCE(t.exit_velocity, 0),
-				t.timestamp
+				t.timestamp, COALESCE(t.max_rpm, 0)
 			FROM throws t
 			LEFT JOIN disc_table d ON d.id = t.disc_id
 			LEFT JOIN sessions s ON s.id = t.session_id
@@ -431,6 +431,7 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 				flightTime   float64
 				exitVelocity float64
 				timestamp    time.Time
+				maxRpm       float64
 			)
 
 			if err := rows.Scan(
@@ -443,6 +444,7 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 				&flightTime,
 				&exitVelocity,
 				&timestamp,
+				&maxRpm,
 			); err != nil {
 				sendProtobufError(c, http.StatusInternalServerError, "Failed to read throw rows")
 				return
@@ -462,6 +464,7 @@ func ListThrows(db *sql.DB) gin.HandlerFunc {
 				FlightTime:   flightTime,
 				ExitVelocity: exitVelocity,
 				Timestamp:    timestamppb.New(timestamp.UTC()),
+				MaxRpm:       &maxRpm,
 			})
 		}
 

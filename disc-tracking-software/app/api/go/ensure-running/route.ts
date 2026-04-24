@@ -89,6 +89,12 @@ function resolveGoCommand(goSourceDir: string): { cmd: string; args: string[]; c
     return { cmd: explicit, args: [], cwd: path.dirname(explicit) };
   }
 
+  // In local development, prefer source execution so the dashboard preflight
+  // uses the latest backend code instead of a stale compiled binary.
+  if (process.env.NODE_ENV !== 'production') {
+    return { cmd: 'go', args: ['run', '.'], cwd: goSourceDir };
+  }
+
   // 2. Auto-detect compiled binary beside the source directory
   const binaryName = process.platform === 'win32' ? 'disc-tracking.exe' : 'disc-tracking';
   const candidates = [

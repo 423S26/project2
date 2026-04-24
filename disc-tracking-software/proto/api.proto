@@ -106,6 +106,7 @@ message ThrowListItem {
   double flight_time = 7;
   double exit_velocity = 8;
   google.protobuf.Timestamp timestamp = 9;
+  optional double max_rpm = 10;
 }
 
 message GetThrowsResponse {

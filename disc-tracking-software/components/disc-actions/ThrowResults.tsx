@@ -31,7 +31,7 @@ type DeviationPoint = {
   deviation: number;
 };
 
-export default function ThrowResults({ distance, time, unit = 'feet', onSaveThrow, rpm }: Props) {
+export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm }: Props) {
   const { settings } = useSettings();
 
   const convert = (val: number) => (unit === 'meters' ? val * 0.3048 : val);

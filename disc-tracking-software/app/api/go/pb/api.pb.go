@@ -841,6 +841,7 @@ type ThrowListItem struct {
 	FlightTime    float64                `protobuf:"fixed64,7,opt,name=flight_time,json=flightTime,proto3" json:"flight_time,omitempty"`
 	ExitVelocity  float64                `protobuf:"fixed64,8,opt,name=exit_velocity,json=exitVelocity,proto3" json:"exit_velocity,omitempty"`
 	Timestamp     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	MaxRpm        *float64               `protobuf:"fixed64,10,opt,name=max_rpm,json=maxRpm,proto3,oneof" json:"max_rpm,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -936,6 +937,13 @@ func (x *ThrowListItem) GetTimestamp() *timestamppb.Timestamp {
 		return x.Timestamp
 	}
 	return nil
+}
+
+func (x *ThrowListItem) GetMaxRpm() float64 {
+	if x != nil && x.MaxRpm != nil {
+		return *x.MaxRpm
+	}
+	return 0
 }
 
 type GetThrowsResponse struct {
@@ -1542,7 +1550,7 @@ const file_api_proto_rawDesc = "" +
 	"\x05_hdop\"9\n" +
 	"\rThrowResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\tR\x02id\"\xb9\x02\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\"\xe3\x02\n" +
 	"\rThrowListItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -1554,7 +1562,11 @@ const file_api_proto_rawDesc = "" +
 	"\vflight_time\x18\a \x01(\x01R\n" +
 	"flightTime\x12#\n" +
 	"\rexit_velocity\x18\b \x01(\x01R\fexitVelocity\x128\n" +
-	"\ttimestamp\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\"H\n" +
+	"\ttimestamp\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x1c\n" +
+	"\amax_rpm\x18\n" +
+	" \x01(\x01H\x00R\x06maxRpm\x88\x01\x01B\n" +
+	"\n" +
+	"\b_max_rpm\"H\n" +
 	"\x11GetThrowsResponse\x123\n" +
 	"\x06throws\x18\x01 \x03(\v2\x1b.disctracking.ThrowListItemR\x06throws\"\xa5\x02\n" +
 	"\x13UserSettingsRequest\x12-\n" +
@@ -1667,6 +1679,7 @@ func file_api_proto_init() {
 	file_hardware_proto_init()
 	file_api_proto_msgTypes[1].OneofWrappers = []any{}
 	file_api_proto_msgTypes[10].OneofWrappers = []any{}
+	file_api_proto_msgTypes[12].OneofWrappers = []any{}
 	file_api_proto_msgTypes[14].OneofWrappers = []any{}
 	file_api_proto_msgTypes[15].OneofWrappers = []any{}
 	file_api_proto_msgTypes[17].OneofWrappers = []any{}

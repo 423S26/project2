@@ -15,6 +15,7 @@ type ThrowData = {
   distance: number;
   time: number;
   velocity: number;
+  rpm: number;
   timestamp: string;
 };
 
@@ -47,7 +48,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSe
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const throwItems = (await throwAPI.getThrows()).map((item) => ({
+      const throwItems = (await throwAPI.getThrows()).map((item: any) => ({
         id: item.id,
         sessionId: item.session_id,
         sessionName: item.session_label,
@@ -56,6 +57,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSe
         distance: Number(item.distance || 0),
         time: Number(item.flight_time || 0),
         velocity: Number(item.exit_velocity || 0),
+        rpm: Number(item.max_rpm || 0), // Use max_rpm from API, may need to adjust if API field name is different
         timestamp: item.timestamp,
       }));
 
@@ -190,6 +192,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSe
                   <ThrowResults
                     distance={throwData.distance}
                     time={throwData.time}
+                    rpm={throwData.rpm}
                     unit="feet"
                   />
                 </div>

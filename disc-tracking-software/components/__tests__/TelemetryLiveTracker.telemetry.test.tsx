@@ -6,6 +6,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import LiveTracker from '../TelemetryLiveTracker';
 import { DeviceProvider, useDevice } from '../../contexts/DeviceContext';
+import { SettingsProvider } from '../../contexts/SettingsContext';
 import { useEffect } from 'react';
 
 function encodeVarint(value: number): number[] {
@@ -66,29 +67,23 @@ function encodeGetTelemetryResponse(input: {
     encodeFieldInt64(7, input.timestamp),
   ]);
 
-  const repeatedTelemetryEntry = concatBytes([
-    new Uint8Array([0x0a]), // telemetry entry tag (field 1, wire type 2)
-    new Uint8Array(encodeVarint(telemetryUpdateMessage.length)),
-    telemetryUpdateMessage,
-  ]);
-
   const outer = concatBytes([
     new Uint8Array([0x0a]), // GetTelemetryResponse.telemetry (field 1, wire type 2)
-    new Uint8Array(encodeVarint(repeatedTelemetryEntry.length)),
-    repeatedTelemetryEntry,
+    new Uint8Array(encodeVarint(telemetryUpdateMessage.length)),
+    telemetryUpdateMessage,
   ]);
 
   return outer.buffer.slice(outer.byteOffset, outer.byteOffset + outer.byteLength) as ArrayBuffer;
 }
 
-function ConnectedTracker() {
+function ConnectedTracker({ activeSessionDeviceId = 'disc-42' }: { activeSessionDeviceId?: string }) {
   const { connectDevice } = useDevice();
 
   useEffect(() => {
     connectDevice('disc-42', 'Driver');
   }, [connectDevice]);
 
-  return <LiveTracker activeSessionId="session-1" />;
+  return <LiveTracker activeSessionId="session-1" activeSessionDeviceId={activeSessionDeviceId} />;
 }
 
 describe('TelemetryLiveTracker polling telemetry', () => {
@@ -115,9 +110,11 @@ describe('TelemetryLiveTracker polling telemetry', () => {
 
   it('renders live telemetry values from protobuf polling response', async () => {
     render(
-      <DeviceProvider>
-        <ConnectedTracker />
-      </DeviceProvider>
+      <SettingsProvider>
+        <DeviceProvider>
+          <ConnectedTracker />
+        </DeviceProvider>
+      </SettingsProvider>
     );
 
     await waitFor(() => {
@@ -130,5 +127,22 @@ describe('TelemetryLiveTracker polling telemetry', () => {
     });
 
     expect(globalThis.fetch).toHaveBeenCalled();
+  });
+
+  it('does not poll telemetry when the active session targets a different device', async () => {
+    render(
+      <SettingsProvider>
+        <DeviceProvider>
+          <ConnectedTracker activeSessionDeviceId="device-001" />
+        </DeviceProvider>
+      </SettingsProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Driver Telemetry')).toBeTruthy();
+      expect(screen.getByText('Session/device mismatch')).toBeTruthy();
+    });
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });

@@ -50,7 +50,7 @@ export default function DiscSelectorMenu({
       >
         <div className="py-3 px-2">
           {/* Disc Selector (custom dropdown trigger) */}
-          <div className="px-4 py-4 border-b border-[#764d9f]/30">
+          <div className="px-5 py-4 border-b border-[#764d9f]/30">
             <p className="text-sm text-white/70 uppercase tracking-wide mb-2 font-medium">
               Select Active Disc
             </p>
@@ -140,7 +140,7 @@ export default function DiscSelectorMenu({
             onClick={onOpenAddPopup}
           >
             <svg className="w-6 h-6 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 4v16m8-8H4" />
             </svg>
             Add New Tracker Disc
           </button>
@@ -149,7 +149,7 @@ export default function DiscSelectorMenu({
           {/* Remove Disc */}
           {selectedDisc && (
             <button
-              className="w-full text-left px-6 py-4 text-base text-red-300 hover:bg-red-900/20 hover:text-red-200 transition flex items-center gap-4 rounded-lg"
+              className="w-full text-left px-6 py-4 text-base text-red-300 hover:bg-red-900/20 hover:text-red-200 transition flex items-center gap-4 rounded-lg cursor-pointer"
               onClick={() => {
                 onRemoveDisc();
               }}

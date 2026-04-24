@@ -6,7 +6,7 @@ import DiscActionsDropdown from '@/components/disc-actions/DiscActionsDropdown';
 import ThrowStatisticsOverlay from '@/components/ThrowStatisticsOverlay';
 import LiveTracker from '@/components/TelemetryLiveTracker';
 import { getUserNameAction } from '@/lib/actions/auth-actions';
-import { sessionAPI, discAPI } from '@/lib/api-client';
+import { sessionAPI, discAPI, type Session } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { useDevice } from '@/contexts/DeviceContext';
 
@@ -21,7 +21,7 @@ interface Disc {
 
 export default function DashboardHome() {
   // Session State - fetched from backend
-  const [activeSession, setActiveSession] = useState<any>(null);
+  const [activeSession, setActiveSession] = useState<Session | null>(null);
   const [sessionNameInput, setSessionNameInput] = useState('');
   const [showStartPopup, setShowStartPopup] = useState(false);
   const [showEndPopup, setShowEndPopup] = useState(false);
@@ -104,11 +104,15 @@ export default function DashboardHome() {
       toast.error('Please enter a session name');
       return;
     }
+    if (!connectedDevice?.deviceId) {
+      toast.error('Connect a disc before starting a tracking session.');
+      return;
+    }
 
     setIsLoading(true);
     try {
       const response = await sessionAPI.createSession(
-        connectedDevice?.deviceId || 'device-001',
+        connectedDevice.deviceId,
         sessionNameInput.trim()
       );
       setActiveSession(response);
@@ -173,19 +177,19 @@ export default function DashboardHome() {
               </div>
             )}
 
-            {/* Disc Actions Dropdown – only shown during active session */}
-            {activeSession && (
-              <div className="flex justify-center mb-10">
-                <DiscActionsDropdown
-                  currentDiscs={userDiscs}
-                  sessionId={activeSession.id}
-                />
-              </div>
-            )}
+            {/* Disc selector and sync controls */}
+            <div className="flex justify-center mb-10">
+              <DiscActionsDropdown
+                currentDiscs={userDiscs}
+                sessionId={activeSession?.id}
+              />
+            </div>
 
             {/* Live hardware telemetry card */}
             <div className="max-w-2xl mx-auto mb-10">
-              <LiveTracker activeSessionId={activeSession?.id} />
+              <LiveTracker
+                activeSessionId={activeSession?.device_id}
+              />
             </div>
 
             {/* Session button + Stats button – always together at bottom */}

@@ -14,7 +14,7 @@ type Props = {
   discLon?: number;       // disc GPS longitude from telemetry
 };
 
-export default function TrackerDisplay({ distance, unit = 'feet', batteryLevel, discLat, discLon }: Props) {
+export default function TrackerDisplay({ distance, unit, batteryLevel, discLat, discLon }: Props) {
   const displayedDistance = unit === 'meters' 
     ? (distance * 0.3048).toFixed(1) 
     : distance.toFixed(0);

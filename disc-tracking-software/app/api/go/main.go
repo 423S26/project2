@@ -17,6 +17,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"project2/disc-tracking-software/pb"
@@ -45,6 +46,20 @@ func loadDotEnvFiles() {
 	goDir := filepath.Dir(file)
 	repoRoot := filepath.Clean(filepath.Join(goDir, "..", "..", ".."))
 	_ = godotenv.Overload(filepath.Join(repoRoot, ".env.local"), filepath.Join(repoRoot, ".env"))
+}
+
+func normalizeDatabaseURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+
+	query := parsed.Query()
+	if query.Get("disable_prepared_binary_result") == "" {
+		query.Set("disable_prepared_binary_result", "yes")
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 //------------------------------------------
@@ -273,69 +288,64 @@ func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("userID")
 		if userID == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authenticated user"})
+			sendProtobufError(c, http.StatusUnauthorized, "missing authenticated user")
 			return
 		}
 
 		// Read protobuf data from request body
 		body, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+			sendProtobufError(c, http.StatusBadRequest, "failed to read request body")
 			return
 		}
 
 		var batch pb.SyncBatch
 		if err := proto.Unmarshal(body, &batch); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to unmarshal protobuf"})
+			sendProtobufError(c, http.StatusBadRequest, "failed to unmarshal protobuf")
 			return
 		}
 
 		if len(batch.GetPings()) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "batch contains no pings"})
+			sendProtobufError(c, http.StatusBadRequest, "batch contains no pings")
 			return
 		}
 
 		deviceID := strings.TrimSpace(batch.GetPings()[0].GetDeviceId())
 		if deviceID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "first ping is missing device_id"})
+			sendProtobufError(c, http.StatusBadRequest, "first ping is missing device_id")
 			return
 		}
 
 		owned, err := verifyDeviceOwnership(db, userID, deviceID)
 		if err != nil {
 			log.Printf("[ProcessTelemetry] ownership query failed: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate device ownership"})
+			sendProtobufError(c, http.StatusInternalServerError, "failed to validate device ownership")
 			return
 		}
 		if !owned {
-			c.JSON(http.StatusForbidden, gin.H{"error": "user does not own device"})
+			sendProtobufError(c, http.StatusForbidden, "user does not own device")
 			return
 		}
 
 		// Process each ping in the batch
 		processedPings := 0
 		for _, ping := range batch.GetPings() {
-			if err := processSinglePing(db, ping); err != nil {
+			if err := processSinglePing(db, userID, ping); err != nil {
 				log.Printf("[ProcessTelemetry] Failed to process ping for device %s: %v", ping.DeviceId, err)
 				continue
 			}
 			processedPings++
 		}
 
-		distanceFt, releaseAngle, maxRPM := calculateTelemetrySummary(batch.GetPings())
-		c.JSON(http.StatusOK, gin.H{
-			"status":                 "success",
-			"processed_count":        processedPings,
-			"device_id":              deviceID,
-			"calculated_distance_ft": distanceFt,
-			"release_angle":          releaseAngle,
-			"max_rpm":                maxRPM,
+		sendProtobufResponse(c, http.StatusOK, &pb.TelemetryResponse{
+			Message:        "Telemetry uploaded",
+			ProcessedCount: int32(processedPings),
 		})
 	}
 }
 
 // Process a single ping and store telemetry data
-func processSinglePing(db *sql.DB, ping *pb.Ping) error {
+func processSinglePing(db *sql.DB, userID string, ping *pb.Ping) error {
 	// Validate ping data
 	if !ValidatePing(ping) {
 		return nil // Skip invalid pings silently
@@ -353,12 +363,33 @@ func processSinglePing(db *sql.DB, ping *pb.Ping) error {
 	// disc at rest reads ~1.0g on Z; tilt/wobble pushes that away from 1.0.
 	wobble := math.Abs(float64(ping.AccelZ) - 1.0)
 
-	// Persist to PostGIS
+	// Persist raw telemetry samples for API fallback polling.
 	_, err := db.Exec(`
-		INSERT INTO throws (device_id, location, hdop, rpm, wobble_g, timestamp)
-		VALUES ($1, ST_SetSRID(ST_MakePoint($2, $3, $4), 4326), $5, $6, $7, $8)`,
-		ping.GetDeviceId(), ping.GetLon(), ping.GetLat(), ping.GetAlt(), hdop, rpm, wobble,
+		INSERT INTO telemetry (
+			device_id,
+			user_id,
+			timestamp,
+			latitude,
+			longitude,
+			altitude,
+			accel_x,
+			accel_y,
+			accel_z,
+			rpm,
+			hdop,
+			sats,
+			speed,
+			battery_level,
+			frequency_noise
+		)
+		VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+		)`,
+		ping.GetDeviceId(), userID,
 		time.Unix(ping.Timestamp/1000, 0),
+		ping.GetLat(), ping.GetLon(), ping.GetAlt(),
+		ping.GetAccelX(), ping.GetAccelY(), ping.GetAccelZ(),
+		rpm, hdop, ping.GetSats(), ping.GetSpeedMps(), ping.GetBattPct(), wobble,
 	)
 
 	return err
@@ -367,20 +398,43 @@ func processSinglePing(db *sql.DB, ping *pb.Ping) error {
 // Get Telemetry Data - Retrieve recent telemetry for a device
 func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		userID := c.GetString("userID")
+		if userID == "" {
+			sendProtobufError(c, http.StatusUnauthorized, "missing authenticated user")
+			return
+		}
+
 		deviceId := c.Query("device_id")
 		if deviceId == "" {
 			sendProtobufError(c, http.StatusBadRequest, "device_id parameter required")
 			return
 		}
 
+		owned, err := verifyDeviceOwnership(db, userID, deviceId)
+		if err != nil {
+			log.Printf("[GetTelemetry] ownership query failed: %v", err)
+			sendProtobufError(c, http.StatusInternalServerError, "Failed to validate device ownership")
+			return
+		}
+		if !owned {
+			sendProtobufError(c, http.StatusForbidden, "user does not own device")
+			return
+		}
+
 		// Get recent telemetry data (last 100 points)
 		rows, err := db.Query(`
-			SELECT device_id, ST_X(location), ST_Y(location), ST_Z(location),
-				   hdop, rpm, wobble_g, timestamp
-			FROM throws
-			WHERE device_id = $1
+			SELECT
+				device_id,
+				latitude,
+				longitude,
+				altitude,
+				COALESCE(rpm, 0),
+				COALESCE(frequency_noise, 0),
+				timestamp
+			FROM telemetry
+			WHERE user_id = $1 AND device_id = $2
 			ORDER BY timestamp DESC
-			LIMIT 100`, deviceId)
+			LIMIT 100`, userID, deviceId)
 
 		if err != nil {
 			log.Printf("[GetTelemetry] Database query failed: %v", err)
@@ -392,10 +446,13 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 		var telemetry []*pb.TelemetryUpdate
 		for rows.Next() {
 			var deviceId string
-			var lon, lat, alt, hdop, rpm, wobble float64
+			var alt sql.NullFloat64
+			var lat sql.NullFloat64
+			var lon sql.NullFloat64
+			var rpm, wobble float64
 			var timestamp time.Time
 
-			err := rows.Scan(&deviceId, &lon, &lat, &alt, &hdop, &rpm, &wobble, &timestamp)
+			err := rows.Scan(&deviceId, &lat, &lon, &alt, &rpm, &wobble, &timestamp)
 			if err != nil {
 				log.Printf("[GetTelemetry] Row scan error: %v", err)
 				continue
@@ -403,14 +460,23 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 
 			update := &pb.TelemetryUpdate{
 				DeviceId:  deviceId,
-				Lat:       lat,
-				Lon:       lon,
-				Alt:       &alt,
+				Lat:       lat.Float64,
+				Lon:       lon.Float64,
 				Rpm:       rpm,
 				Wobble:    wobble,
 				Timestamp: timestamp.Unix() * 1000, // Convert to milliseconds
 			}
+			if alt.Valid {
+				altValue := alt.Float64
+				update.Alt = &altValue
+			}
 			telemetry = append(telemetry, update)
+		}
+
+		if err := rows.Err(); err != nil {
+			log.Printf("[GetTelemetry] Row iteration failed: %v", err)
+			sendProtobufError(c, http.StatusInternalServerError, "Failed to fetch telemetry")
+			return
 		}
 
 		resp := &pb.GetTelemetryResponse{
@@ -431,7 +497,7 @@ func main() {
 		log.Println("Found DATABASE_URL, attempting connection...")
 	}
 
-	db, err := sql.Open("postgres", dbUrl)
+	db, err := sql.Open("postgres", normalizeDatabaseURL(dbUrl))
 	if err != nil {
 		log.Fatal(err)
 	}
