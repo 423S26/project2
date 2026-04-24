@@ -20,8 +20,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"project2/disc-tracking-software/handlers"
-	"project2/disc-tracking-software/pb"
+	"project2/disc-tracking-software/backend/handlers"
+	"project2/disc-tracking-software/backend/pb"
 	"runtime"
 	"strings"
 	"time"
@@ -163,12 +163,12 @@ func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
 
 // CalculateRPM derives RPM from gyroscope Z-axis angular velocity (deg/s).
 // The gyro Z-axis measures spin rate around the disc's vertical axis.
-// At rest gyro_z ≈ 0 so RPM ≈ 0 — unlike the old centripetal-accel formula
+// At rest gyro_z â‰ˆ 0 so RPM â‰ˆ 0 â€” unlike the old centripetal-accel formula
 // which falsely read ~170 RPM from gravity leaking into accel X/Y.
 func CalculateRPM(gyroZDegPerSec float64) float64 {
 	// 1 RPM = 6 deg/s  (360 deg / 60 s)
 	rpm := math.Abs(gyroZDegPerSec) / 6.0
-	// Suppress sensor noise — anything below ~5 RPM (30 deg/s) is drift
+	// Suppress sensor noise â€” anything below ~5 RPM (30 deg/s) is drift
 	if rpm < 5 {
 		return 0
 	}
