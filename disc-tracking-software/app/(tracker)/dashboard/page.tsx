@@ -1,7 +1,5 @@
 'use client';
 
-export const dynamic = 'force-dynamic';
-
 import { useState, useEffect } from 'react';
 import DashboardHeader from '@/components/DashboardHeader';
 import DiscActionsDropdown from '@/components/disc-actions/DiscActionsDropdown';

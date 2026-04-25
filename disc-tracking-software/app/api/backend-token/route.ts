@@ -3,8 +3,6 @@ import { createHmac, randomUUID } from 'crypto';
 
 import { auth } from '@/auth';
 
-export const dynamic = 'force-dynamic';
-
 function base64UrlEncode(input: string | Buffer): string {
   return Buffer.from(input)
     .toString('base64')

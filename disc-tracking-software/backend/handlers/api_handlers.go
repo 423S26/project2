@@ -621,9 +621,13 @@ func UpdateUserSettings(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		resp := &pb.EndSessionResponse{
-			Message: "Settings updated",
-			EndedAt: timestamppb.New(now),
+		resp := &pb.UserSettingsResponse{
+			Id:                   "default",
+			UserId:               userID,
+			PreferredUnit:        req.PreferredUnit,
+			NotificationsEnabled: req.NotificationsEnabled,
+			AutoSaveEnabled:      req.AutoSaveEnabled,
+			UpdatedAt:            timestamppb.New(now),
 		}
 
 		SendProtobufResponse(c, http.StatusOK, resp)
@@ -641,7 +645,15 @@ func SendProtobufResponse(c *gin.Context, statusCode int, message proto.Message)
 	}
 
 	c.Header("Content-Type", "application/protobuf")
-        c.Header("Cache-Control", "no-store, max-age=0")
+	c.Data(statusCode, "application/protobuf", data)
+}
+
+func SendProtobufError(c *gin.Context, statusCode int, message string) {
+	errResp := &pb.ErrorResponse{
+		Error: message,
+		Code:  int32(statusCode),
+	}
+
 	data, err := proto.Marshal(errResp)
 	if err != nil {
 		c.JSON(statusCode, gin.H{"error": message})
@@ -649,4 +661,5 @@ func SendProtobufResponse(c *gin.Context, statusCode int, message proto.Message)
 	}
 
 	c.Header("Content-Type", "application/protobuf")
-        c.Header("Cache-Control", "no-store, max-age=0")
+	c.Data(statusCode, "application/protobuf", data)
+}
