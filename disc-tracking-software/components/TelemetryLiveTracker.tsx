@@ -52,6 +52,16 @@ function rpmFromGyroZ(gyroZ: number): number {
 	return rpm < 5 ? 0 : rpm; // suppress sensor noise below 30 deg/s
 }
 
+/** Compute distance from BLE RSSI based on Free Space Path Loss model */
+function calculateRssiDistance(rssi: number): number {
+        if (rssi === 0) return -1.0;
+        // txPower is the RSSI value at 1 meter. Often calibrated per device.
+        const txPower = -65;
+        // factor is the environmental attenuation factor. 2.0 = free space, 3.0+ = obstacles
+        const factor = 2.0; 
+        return Math.pow(10, (txPower - rssi) / (10 * factor));
+}
+
 export default function LiveTracker({
   activeSessionId,
   onTelemetryAction,
@@ -71,6 +81,7 @@ export default function LiveTracker({
 
         const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
         const [userHeading, setUserHeading] = useState<number | null>(null);
+        const [currentRssi, setCurrentRssi] = useState<number | null>(null);
 
         // Track user geolocation for relative distance
         useEffect(() => {
@@ -149,8 +160,16 @@ export default function LiveTracker({
 				lastFetch: new Date(),
 			});
 		});
-		return () => unsubscribe();
-	}, []);
+
+		const unsubRssi = bleManager.onRssi((rssi: number) => {
+			setCurrentRssi(rssi);
+		});
+
+		return () => {
+			unsubscribe();
+			unsubRssi();
+		};
+	}, [onTelemetryAction]);
 
 	const POLL_INTERVAL = 1000; // Poll every 1 second
 	const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
@@ -411,6 +430,11 @@ export default function LiveTracker({
 		}
 	}
 
+	let fallbackDistance: number | null = null;
+	if (distanceToDisc === null && currentRssi !== null && currentRssi < 0) {
+		fallbackDistance = calculateRssiDistance(currentRssi);
+	}
+
 	// Color map for pipeline stages
 	const stageColor = (stage: string) => {
 		const layer = stage.split(':')[0];
@@ -478,7 +502,7 @@ export default function LiveTracker({
 								<div className="pb-1.5 border-b border-slate-700/30">
 									<div className="flex justify-between items-center mb-0.5">
 										<div className="text-[10px] text-green-500/70">GPS</div>
-										{distanceToDisc !== null && (
+										{distanceToDisc !== null && !isNaN(distanceToDisc) ? (
 											<div className="text-[10px] text-green-400">
 												Dist: <span className="font-bold">{distanceToDisc.toFixed(1)}m</span> {relativeBearing !== null && (
 													<span className="ml-1" style={{ display: 'inline-block', transform: `rotate(${Math.round(relativeBearing)}deg)` }}>
@@ -486,7 +510,11 @@ export default function LiveTracker({
 													</span>
 												)}
 											</div>
-										)}
+										) : fallbackDistance !== null ? (
+											<div className="text-[10px] text-blue-400">
+												Est. Dist (RSSI): <span className="font-bold">{fallbackDistance.toFixed(1)}m</span>
+											</div>
+										) : null}
 									</div>
 									<div className="grid grid-cols-4 gap-x-4 gap-y-0.5">
 										<div>lat: <span className="text-green-300">{lastBlePing.lat.toFixed(6)}</span></div>

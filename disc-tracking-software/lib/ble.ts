@@ -209,6 +209,9 @@ const PING_CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
 
 type BLEDevice = {
   gatt?: BLERemoteGATTServer | null;
+  watchAdvertisements?: () => Promise<void>;
+  addEventListener?: (type: string, listener: (e: any) => void) => void;
+  removeEventListener?: (type: string, listener: (e: any) => void) => void;
 };
 
 type BLERemoteGATTServer = {
@@ -249,6 +252,7 @@ export class BLEManager {
   private pendingBatches: PingData[][] = [];
   private throwActive = false;
   private pingListeners: Array<(ping: PingData) => void> = [];
+  private rssiListeners: Array<(rssi: number) => void> = [];
   private onSyncStatusCallback?: (status: 'idle' | 'success' | 'error') => void;
   private readonly BLE_CHUNK_SIZE = 20;
   private readonly FRAME_IDLE_FLUSH_MS = 40;
@@ -287,6 +291,21 @@ export class BLEManager {
 
       // Connect to GATT server
       const server = await device.gatt!.connect();
+
+      // Retrieve RSSI if supported (Directional Tracking Fallback)
+      if (device.watchAdvertisements && device.addEventListener) {
+        try {
+          await device.watchAdvertisements();
+          device.addEventListener('advertisementreceived', (event: any) => {
+            if (event.rssi != null && this.rssiListeners.length > 0) {
+              this.rssiListeners.forEach(cb => cb(event.rssi));
+            }
+          });
+          pipelineLog('BLE:CONN', 'info', `Monitoring BLE RSSI for distance fallback`);
+        } catch (e) {
+          pipelineLog('BLE:CONN', 'info', `watchAdvertisements not supported`);
+        }
+      }
 
       // Get the service
       const service = await server.getPrimaryService(TRACKER_SERVICE_UUID);
@@ -343,6 +362,13 @@ export class BLEManager {
     this.pingListeners.push(callback);
     return () => {
       this.pingListeners = this.pingListeners.filter(cb => cb !== callback);
+    };
+  }
+
+  onRssi(callback: (rssi: number) => void): () => void {
+    this.rssiListeners.push(callback);
+    return () => {
+      this.rssiListeners = this.rssiListeners.filter(cb => cb !== callback);
     };
   }
 
