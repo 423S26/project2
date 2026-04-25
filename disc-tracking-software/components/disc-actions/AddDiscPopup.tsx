@@ -66,8 +66,8 @@ export default function AddDiscPopup({
             </div>
 
             {/* Weight */}
-            <div className="flex gap-4">
-              <div className="flex-1">
+            <div className="flex flex-col sm:flex-row gap-4">
+              <div className="flex-1 min-w-0">
                 <label className="block text-sm text-white/80 mb-2">
                   Weight (g)
                 </label>
@@ -78,12 +78,12 @@ export default function AddDiscPopup({
                   value={weight}
                   onChange={(e) => onChangeWeight(parseInt(e.target.value) || 175)}
                   placeholder="175"
-                  className="w-full px-4 py-3 bg-[#190f2A] border border-[#456fb6]/60 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#54c4c3] focus:ring-2 focus:ring-[#54c4c3]/40"
+                  className="w-full min-w-0 px-4 py-3 bg-[#190f2A] border border-[#456fb6]/60 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#54c4c3] focus:ring-2 focus:ring-[#54c4c3]/40"
                 />
               </div>
 
               {/* Color */}
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 <label className="block text-sm text-white/80 mb-2">
                   Color
                 </label>
@@ -92,14 +92,14 @@ export default function AddDiscPopup({
                     type="color"
                     value={color}
                     onChange={(e) => onChangeColor(e.target.value)}
-                    className="w-12 h-11 rounded-lg cursor-pointer border border-[#456fb6]/60"
+                    className="w-12 h-11 rounded-lg cursor-pointer border border-[#456fb6]/60 shrink-0"
                   />
                   <input
                     type="text"
                     value={color}
                     onChange={(e) => onChangeColor(e.target.value)}
                     placeholder="#000000"
-                    className="flex-1 px-4 py-3 bg-[#190f2A] border border-[#456fb6]/60 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#54c4c3] focus:ring-2 focus:ring-[#54c4c3]/40"
+                    className="flex-1 min-w-0 px-4 py-3 bg-[#190f2A] border border-[#456fb6]/60 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#54c4c3] focus:ring-2 focus:ring-[#54c4c3]/40"
                   />
                 </div>
               </div>
