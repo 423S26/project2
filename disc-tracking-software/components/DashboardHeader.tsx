@@ -257,6 +257,16 @@ export default function DashboardHeader() {
                 </label>
               </div>
 
+              {/* User Guide Button - NEW */}
+              <div className="pt-4">
+                <Link
+                  href="/docs"
+                  className="block w-full py-4 px-6 text-center bg-[#223066]/60 hover:bg-[#223066] border border-[#456fb6]/60 text-white font-medium rounded-xl transition-all duration-200 hover:border-[#54c4c3]/50"
+                >
+                  User Guide
+                </Link>
+              </div>
+
               {/* Save button */}
               <div className="pt-8 pb-12">
                 <button
