@@ -8,7 +8,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { useSettings, MetricKey } from '@/contexts/SettingsContext';
+import type { ReactNode } from 'react';
+import { useSettings } from '@/contexts/SettingsContext';
 import { DistanceUnit } from './types';
 
 // ──────────────────────────────────────────────────────────────
@@ -24,6 +25,7 @@ type Props = {
   unit?: DistanceUnit;
   onSaveThrow?: () => void;  // optional manual save callback
   rpm?: number;              // real RPM from gyroscope telemetry
+  trajectoryData?: Array<{ distance: number; deviation: number; height?: number }>;
 };
 
 type DeviationPoint = {
@@ -31,7 +33,7 @@ type DeviationPoint = {
   deviation: number;
 };
 
-export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm }: Props) {
+export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, trajectoryData }: Props) {
   const { settings } = useSettings();
 
   const convert = (val: number) => (unit === 'meters' ? val * 0.3048 : val);
@@ -56,6 +58,14 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm }:
   const gridCols = visibleMetrics <= 2 ? 'grid-cols-2' : visibleMetrics <= 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-3 lg:grid-cols-5';
 
   const chartData = (() => {
+    if (trajectoryData && trajectoryData.length >= 2) {
+      return trajectoryData.map((point) => ({
+        distance: point.distance,
+        deviation: point.deviation,
+        height: point.height ?? 0,
+      }));
+    }
+
     const points = [];
     const steps = 40;
     const maxHeightFt = 40;
@@ -129,7 +139,7 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm }:
 
       {/* Flight Path Chart */}
       <div className="bg-[#190f2A]/80 backdrop-blur border border-[#456fb6]/40 rounded-xl p-4 shadow-lg h-80">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height={300} minWidth={0} minHeight={240}>
           <LineChart data={chartData} margin={{ top: 20, right: 20, left: 10, bottom: 40 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#456fb6/30" />
             <XAxis
@@ -166,15 +176,15 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm }:
                 border: '1px solid #54c4c3',
                 color: 'white',
               }}
-              formatter={(value: any, name: string | number | undefined) => {
+              formatter={(value: unknown, name: string | number | undefined) => {
                 if (typeof value !== 'number' || Number.isNaN(value)) return '';
                 const converted = convert(value);
                 if (name === 'distance') return `${converted.toFixed(1)} ${label}`;
                 if (name === 'height') return `${converted.toFixed(1)} ${label}`;
                 return value.toFixed(1);
               }}
-              labelFormatter={(label: any) => {
-                const num = Number(label);
+              labelFormatter={(tooltipLabel: ReactNode) => {
+                const num = Number(tooltipLabel);
                 if (Number.isNaN(num)) return '';
                 return num === 0
                   ? 'Center'

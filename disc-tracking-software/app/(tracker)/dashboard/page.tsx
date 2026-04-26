@@ -188,7 +188,8 @@ export default function DashboardHome() {
             {/* Live hardware telemetry card */}
             <div className="max-w-2xl mx-auto mb-10">
               <LiveTracker
-                activeSessionId={activeSession?.device_id}
+                deviceId={activeSession?.device_id}
+                activeSessionId={activeSession?.id}
               />
             </div>
 

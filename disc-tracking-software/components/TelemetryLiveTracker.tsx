@@ -1,9 +1,8 @@
 "use client";
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProtoDecoder } from '@/lib/pb/codec';
 import type { PingData } from '@/lib/pb/codec';
 import { getClientAuthHeaders } from '@/lib/auth-headers';
-import { FirmwareConnectionError, ConnectionMonitor, logError } from '@/lib/errors';
 import { toast } from 'sonner';
 import { useDevice } from '@/contexts/DeviceContext';
 import { useSettings } from '@/contexts/SettingsContext';
@@ -13,16 +12,11 @@ import {
   getPipelineStats,
   getPipelineLogs,
   clearPipelineLogs,
-  bleManager,
   type PipelineStats,
   type PipelineLogEntry,
+  bleManager,
 } from '@/lib/ble';
 
-const statusColors = {
-	"IDLE": "bg-gray-500",
-	"IN_FLIGHT": "bg-green-500 animate-pulse",
-	"LANDED": "bg-blue-600",
-};
 
 interface TelemetryData {
 	device_id: string;
@@ -31,6 +25,7 @@ interface TelemetryData {
 	rpm: number;
 	wobble: number;
 	received_at: number;
+	timestamp?: number;
 }
 
 interface ConnectionState {
@@ -62,7 +57,13 @@ function calculateRssiDistance(rssi: number): number {
         return Math.pow(10, (txPower - rssi) / (10 * factor));
 }
 
+	function hasReliableBleFix(ping: PingData | null): boolean {
+		if (!ping) return false;
+		return ping.lat !== 0 && ping.lon !== 0 && ping.sats >= 6 && ping.hdop > 0 && ping.hdop <= 2.5;
+	}
+
 export default function LiveTracker({
+	deviceId,
   activeSessionId,
   onTelemetryAction,
 }: LiveTrackerProps) {
@@ -78,6 +79,8 @@ export default function LiveTracker({
 	});
 	// Track when BLE last delivered data so we can skip API overwrites
 	const bleLastPingRef = useRef<number>(0);
+	const apiForbiddenUntilRef = useRef<number>(0);
+	const hasLoggedForbiddenRef = useRef(false);
 
         const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
         const [userHeading, setUserHeading] = useState<number | null>(null);
@@ -102,13 +105,14 @@ export default function LiveTracker({
 
         // Track user device orientation
         useEffect(() => {
-                const handleOrientation = (event: any) => {
+                const handleOrientation = (event: DeviceOrientationEvent | Event | unknown) => {
+                        const ev = event as Record<string, unknown>;
                         let heading = null;
-                        if (typeof event.webkitCompassHeading !== "undefined") {
-                                heading = event.webkitCompassHeading;
-                        } else if (event.alpha !== null) {
+                        if (typeof ev.webkitCompassHeading === "number") {
+                                heading = ev.webkitCompassHeading;
+                        } else if (typeof ev.alpha === "number" && ev.alpha !== null) {
                                 // Approximate heading (absolute)
-                                heading = 360 - event.alpha;
+                                heading = 360 - ev.alpha;
                         }
                         if (heading !== null) {
                                 setUserHeading(heading);
@@ -116,13 +120,13 @@ export default function LiveTracker({
                 };
                 
                 if (typeof window !== "undefined") {
-                        window.addEventListener("deviceorientationabsolute", handleOrientation as any);
-                        window.addEventListener("deviceorientation", handleOrientation as any);
+                        window.addEventListener("deviceorientationabsolute", handleOrientation as EventListener);
+                        window.addEventListener("deviceorientation", handleOrientation as EventListener);
                 }
                 return () => {
                         if (typeof window !== "undefined") {
-                                window.removeEventListener("deviceorientationabsolute", handleOrientation as any);
-                                window.removeEventListener("deviceorientation", handleOrientation as any);
+                                window.removeEventListener("deviceorientationabsolute", handleOrientation as EventListener);
+                                window.removeEventListener("deviceorientation", handleOrientation as EventListener);
                         }
                 };
         }, []);
@@ -192,14 +196,19 @@ export default function LiveTracker({
 		}
 	};
 
-	const getAuthHeaders = async (): Promise<Record<string, string>> => {
+	const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
 		return getClientAuthHeaders({
 			'Content-Type': 'application/protobuf',
 		});
-	};
+	}, []);
 
-	const fetchTelemetry = async () => {
-		if (!connectedDevice?.deviceId) return;
+	const fetchTelemetry = useCallback(async () => {
+		const telemetryDeviceId = deviceId || lastBlePing?.device_id || connectedDevice?.deviceId;
+		if (!telemetryDeviceId) return;
+
+		if (Date.now() < apiForbiddenUntilRef.current) {
+			return;
+		}
 
 		// When BLE is actively providing wire data, skip API polling entirely.
 		// The debug console shows raw BLE data; polling the API would overwrite
@@ -209,15 +218,29 @@ export default function LiveTracker({
 
 		try {
 			const headers = await getAuthHeaders();
-			const url = `${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(connectedDevice.deviceId)}`;
+			const url = `${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(telemetryDeviceId)}`;
 			const response = await fetch(url, {
 				headers,
 			});
 
 			if (!response.ok) {
+				if (response.status === 403) {
+					apiForbiddenUntilRef.current = Date.now() + 60000;
+					if (!hasLoggedForbiddenRef.current) {
+						hasLoggedForbiddenRef.current = true;
+						pipelineLog(
+							'GIN:HTTP',
+							'warn',
+							`403 Forbidden for telemetry device_id=${telemetryDeviceId}. Backing off polling for 60s.`
+						);
+					}
+					return;
+				}
 				pipelineLog('GIN:HTTP', 'error', `${response.status} ${response.statusText}`);
 				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 			}
+
+			hasLoggedForbiddenRef.current = false;
 
 			const buffer = await response.arrayBuffer();
 			const data = new Uint8Array(buffer);
@@ -238,12 +261,12 @@ export default function LiveTracker({
 				// Use the most recent telemetry update (API fallback only)
 				const latestUpdate = telemetryUpdates[telemetryUpdates.length - 1];
 				const telemetryData: TelemetryData = {
-					device_id: latestUpdate.deviceId,
+					device_id: latestUpdate.device_id,
 					lat: latestUpdate.lat,
 					lon: latestUpdate.lon,
 					rpm: latestUpdate.rpm,
 					wobble: latestUpdate.wobble,
-					received_at: latestUpdate.timestamp,
+					received_at: latestUpdate.timestamp ?? Date.now(),
 				};
 
 				setLastPing(telemetryData);
@@ -276,81 +299,128 @@ export default function LiveTracker({
 				lastError: err.message,
 			}));
 		}
-	};
+	}, [connectedDevice?.deviceId, deviceId, lastBlePing?.device_id, onTelemetryAction, getAuthHeaders, API_BASE_URL]);
 
-	const decodeTelemetryResponse = (data: Uint8Array): any[] => {
+const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
 		if (!data || data.length === 0) return [];
+
+		const skipUnknownField = (decoder: ProtoDecoder, wireType: number): boolean => {
+			try {
+				if (wireType === 0) {
+					decoder.decodeVarint();
+					return true;
+				}
+				if (wireType === 1) {
+					decoder.readBytes(8);
+					return true;
+				}
+				if (wireType === 5) {
+					decoder.readBytes(4);
+					return true;
+				}
+				if (wireType === 2) {
+					const skipLen = decoder.decodeVarint();
+					if (skipLen < 0) return false;
+					decoder.readBytes(skipLen);
+					return true;
+				}
+				return false;
+			} catch {
+				return false;
+			}
+		};
 
 		try {
 			const decoder = new ProtoDecoder(data);
-			const telemetryUpdates: any[] = [];
+			const telemetryUpdates: TelemetryData[] = [];
 
 			while (decoder.getOffset() < data.length) {
-				const tag = decoder.decodeVarint();
+				let tag: number;
+				try {
+					tag = decoder.decodeVarint();
+				} catch {
+					break;
+				}
+
 				const wireType = tag & 0x07;
 				const fieldNumber = tag >>> 3;
 
-				if (fieldNumber === 1 && wireType === 2) {
-					// field 1 = repeated TelemetryUpdate (length-delimited sub-message)
-					const length = decoder.decodeVarint();
-					const endOffset = decoder.getOffset() + length;
+				if (fieldNumber !== 1 || wireType !== 2) {
+					if (!skipUnknownField(decoder, wireType)) {
+						break;
+					}
+					continue;
+				}
 
-					let deviceId = '';
-					let lat = 0;
-					let lon = 0;
-					let alt = 0;
-					let rpm = 0;
-					let wobble = 0;
-					let timestamp = 0;
+				let entryLength: number;
+				try {
+					entryLength = decoder.decodeVarint();
+				} catch {
+					break;
+				}
 
-					while (decoder.getOffset() < endOffset) {
-						const innerTag = decoder.decodeVarint();
-						const innerWireType = innerTag & 0x07;
-						const innerFieldNumber = innerTag >>> 3;
+				if (entryLength < 0) {
+					break;
+				}
 
-						if (innerFieldNumber === 1 && innerWireType === 2) deviceId = decoder.decodeString();
-						else if (innerFieldNumber === 2 && innerWireType === 1) lat = decoder.decodeDouble();
-						else if (innerFieldNumber === 3 && innerWireType === 1) lon = decoder.decodeDouble();
-						else if (innerFieldNumber === 4 && innerWireType === 1) alt = decoder.decodeDouble();
-						else if (innerFieldNumber === 5 && innerWireType === 1) rpm = decoder.decodeDouble();
-						else if (innerFieldNumber === 6 && innerWireType === 1) wobble = decoder.decodeDouble();
-						else if (innerFieldNumber === 7 && innerWireType === 0) timestamp = decoder.decodeVarint();
-						else {
-							// Skip unknown fields by wire type
-							if (innerWireType === 2) {
-								const skipLen = decoder.decodeVarint();
-								decoder.readBytes(skipLen);
-							} else if (innerWireType === 0) decoder.decodeVarint();
-							else if (innerWireType === 1) decoder.readBytes(8);
-							else if (innerWireType === 5) decoder.readBytes(4);
-							else break; // unknown wire type, bail out of this entry
-						}
+				const remaining = data.length - decoder.getOffset();
+				if (entryLength > remaining) {
+					pipelineLog('API:DECODE', 'warn', `Truncated telemetry entry dropped (${entryLength}B requested, ${remaining}B remaining)`);
+					break;
+				}
+
+				let entryBytes: Uint8Array;
+				try {
+					entryBytes = decoder.readBytes(entryLength);
+				} catch {
+					break;
+				}
+
+				const entryDecoder = new ProtoDecoder(entryBytes);
+				let deviceId = '';
+				let lat = 0;
+				let lon = 0;
+				let rpm = 0;
+				let wobble = 0;
+				let timestamp = 0;
+
+				while (entryDecoder.getOffset() < entryBytes.length) {
+					let innerTag: number;
+					try {
+						innerTag = entryDecoder.decodeVarint();
+					} catch {
+						break;
 					}
 
-					telemetryUpdates.push({
-						deviceId,
-						lat,
-						lon,
-						alt,
-						rpm,
-						wobble,
-						timestamp,
-					});
-				} else {
-					// Skip unknown top-level fields
-					if (wireType === 2) {
-						const skipLen = decoder.decodeVarint();
-						decoder.readBytes(skipLen);
-					} else if (wireType === 0) decoder.decodeVarint();
-					else if (wireType === 1) decoder.readBytes(8);
-					else if (wireType === 5) decoder.readBytes(4);
-					else break; // unknown wire type at top level
+					const innerWireType = innerTag & 0x07;
+					const innerFieldNumber = innerTag >>> 3;
+
+					try {
+						if (innerFieldNumber === 1 && innerWireType === 2) deviceId = entryDecoder.decodeString();
+						else if (innerFieldNumber === 2 && innerWireType === 1) lat = entryDecoder.decodeDouble();
+						else if (innerFieldNumber === 3 && innerWireType === 1) lon = entryDecoder.decodeDouble();
+						else if (innerFieldNumber === 4 && innerWireType === 1) entryDecoder.decodeDouble();
+						else if (innerFieldNumber === 5 && innerWireType === 1) rpm = entryDecoder.decodeDouble();
+						else if (innerFieldNumber === 6 && innerWireType === 1) wobble = entryDecoder.decodeDouble();
+						else if (innerFieldNumber === 7 && innerWireType === 0) timestamp = entryDecoder.decodeVarint();
+						else if (!skipUnknownField(entryDecoder, innerWireType)) break;
+					} catch {
+						break;
+					}
 				}
+
+				telemetryUpdates.push({
+					device_id: deviceId,
+					lat,
+					lon,
+					rpm,
+					wobble,
+					received_at: timestamp,
+				});
 			}
 
 			return telemetryUpdates;
 		} catch (error) {
-			// Log decode failure to pipeline but don't throw — return empty
 			const err = error instanceof Error ? error : new Error(String(error));
 			pipelineLog('API:DECODE', 'warn', `Decode skipped (${data.length}B): ${err.message}`);
 			return [];
@@ -375,6 +445,8 @@ export default function LiveTracker({
 
 		// Start polling when device and session are available
 		setLastPing(null);
+		apiForbiddenUntilRef.current = 0;
+		hasLoggedForbiddenRef.current = false;
 		setConnectionState({
 			connected: false,
 			healthy: false,
@@ -393,7 +465,7 @@ export default function LiveTracker({
 				pollIntervalRef.current = null;
 			}
 		};
-	}, [connectedDevice?.deviceId, activeSessionId]);
+	}, [connectedDevice?.deviceId, activeSessionId, fetchTelemetry]);
 
 	if (!connectedDevice) {
 		return (
@@ -406,7 +478,10 @@ export default function LiveTracker({
 	let bearingToDisc: number | null = null;
 	let relativeBearing: number | null = null;
 	const activePing = lastBlePing || lastPing;
-	if (userLocation && activePing && activePing.lat !== 0 && activePing.lon !== 0) {
+	const canUseGpsDistance = lastBlePing
+		? hasReliableBleFix(lastBlePing)
+		: Boolean(activePing && activePing.lat !== 0 && activePing.lon !== 0);
+	if (userLocation && activePing && canUseGpsDistance) {
 		const R = 6371e3; // Earth radius in meters
 		const lat1 = (userLocation.lat * Math.PI) / 180;
 		const lat2 = (activePing.lat * Math.PI) / 180;

@@ -882,6 +882,24 @@ export class ProtoDecoder {
         return '';
       }
 
+      if (length < 0) {
+        throw new ProtoBufferError('Negative string length encountered', {
+          length,
+          offset: this.offset,
+          bufferLength: this.data.length,
+        });
+      }
+
+      const remaining = this.data.length - this.offset;
+      if (length > remaining) {
+        throw new ProtoBufferError('String length exceeds remaining buffer', {
+          length,
+          remaining,
+          offset: this.offset,
+          bufferLength: this.data.length,
+        });
+      }
+
       if (length > 1048576) {
         console.warn('[ProtoDecoder] Large string length detected:', {length});
       }
@@ -899,8 +917,15 @@ export class ProtoDecoder {
         });
       }
     } catch (error) {
-      if (error instanceof ProtoBufferError || error instanceof BoundsError) {
+      if (error instanceof ProtoBufferError) {
         throw error;
+      }
+      if (error instanceof BoundsError) {
+        throw new ProtoBufferError('String read exceeded buffer bounds', {
+          offset: this.offset,
+          bufferLength: this.data.length,
+          error: error.message,
+        });
       }
       throw new ProtoBufferError('String decoding failed', {
         offset: this.offset,
@@ -929,6 +954,9 @@ export class ProtoDecoder {
 
       return value;
     } catch (error) {
+      if (error instanceof BoundsError) {
+        throw error;
+      }
       throw new ProtoBufferError('Double decoding failed', {
         offset: this.offset - 8,
         error: (error as Error).message,
@@ -955,6 +983,9 @@ export class ProtoDecoder {
 
       return value;
     } catch (error) {
+      if (error instanceof BoundsError) {
+        throw error;
+      }
       throw new ProtoBufferError('Float decoding failed', {
         offset: this.offset - 4,
         error: (error as Error).message,
@@ -1020,6 +1051,26 @@ export class ProtoDecoder {
           } else if (wireType === 2) {
             // Length-delimited (string or nested message)
             const length = this.decodeVarint();
+
+            if (length < 0) {
+              throw new ProtoBufferError('Negative length-delimited field length encountered', {
+                fieldNum,
+                length,
+                offset: this.offset,
+                bufferLength: this.data.length,
+              });
+            }
+
+            const remaining = this.data.length - this.offset;
+            if (length > remaining) {
+              throw new ProtoBufferError('Length-delimited field exceeds remaining buffer', {
+                fieldNum,
+                length,
+                remaining,
+                offset: this.offset,
+                bufferLength: this.data.length,
+              });
+            }
             
             if (length > 1048576) {
               console.warn('[ProtoDecoder] Large field detected:', {fieldNum, length});

@@ -9,7 +9,16 @@ export class ProtoBufferError extends Error {
     super(`[ProtoBuf] ${message}`);
     this.name = 'ProtoBufferError';
     if (context) {
-      console.log('%c[ProtoBuf] Error Context:', 'color:#f87171', context);
+      const nestedError = typeof context.error === 'string' ? context.error : '';
+      const isExpectedBoundsError = nestedError.includes('[Bounds] Buffer bounds exceeded');
+      const isExpectedTruncationMessage = /String length exceeds remaining buffer|Length-delimited field exceeds remaining buffer|String read exceeded buffer bounds|Negative string length encountered|Negative length-delimited field length encountered/.test(message);
+      const hasExpectedTruncationShape =
+        typeof context.length === 'number' &&
+        typeof context.remaining === 'number' &&
+        context.length > context.remaining;
+      if (!isExpectedBoundsError && !isExpectedTruncationMessage && !hasExpectedTruncationShape) {
+        console.log('%c[ProtoBuf] Error Context:', 'color:#f87171', context);
+      }
     }
   }
 }

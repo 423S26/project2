@@ -21,6 +21,27 @@ type DiscActionsDropdownProps = {
   sessionId?: string;
 };
 
+type TrajectoryPoint = {
+  distance: number;
+  deviation: number;
+  height: number;
+};
+
+type RawTrajectorySample = {
+  lat: number;
+  lon: number;
+  alt: number;
+  ts: number;
+};
+
+const STREAM_IDLE_STOP_MS = 900;
+const TRAJECTORY_STORAGE_KEY = 'throwTrajectoryByIdV1';
+const MIN_SATS_FOR_FIX = 6;
+const MAX_HDOP_FOR_FIX = 2.5;
+const STATIONARY_SPEED_MPS = 0.8;
+const DISTANCE_NOISE_FLOOR_FEET = 10;
+const DISTANCE_SMOOTHING_ALPHA = 0.2;
+
 /** Calculate distance in feet between two GPS coordinates using haversine formula */
 function haversineDistanceFeet(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -33,12 +54,68 @@ function haversineDistanceFeet(lat1: number, lon1: number, lat2: number, lon2: n
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function localOffsetFeet(originLat: number, originLon: number, lat: number, lon: number): { east: number; north: number } {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const latScale = 364000; // feet per degree latitude
+  const lonScale = 364000 * Math.cos(toRad(originLat));
+  return {
+    east: (lon - originLon) * lonScale,
+    north: (lat - originLat) * latScale,
+  };
+}
+
+function buildTrajectory(samples: RawTrajectorySample[]): TrajectoryPoint[] {
+  if (samples.length < 2) {
+    return [];
+  }
+
+  const origin = samples[0];
+  const offsets = samples.map((sample) => localOffsetFeet(origin.lat, origin.lon, sample.lat, sample.lon));
+  const end = offsets[offsets.length - 1];
+  const norm = Math.hypot(end.east, end.north);
+
+  if (norm < 1) {
+    return [];
+  }
+
+  const axisX = end.east / norm;
+  const axisY = end.north / norm;
+  const baseAlt = samples[0].alt;
+
+  return offsets.map((offset, index) => {
+    const along = offset.east * axisX + offset.north * axisY;
+    const cross = offset.east * (-axisY) + offset.north * axisX;
+    const height = Math.max(0, samples[index].alt - baseAlt);
+
+    return {
+      distance: Math.max(0, along),
+      deviation: cross,
+      height,
+    };
+  });
+}
+
+function persistThrowTrajectory(throwId: string, points: TrajectoryPoint[]): void {
+  if (typeof window === 'undefined' || !throwId || points.length === 0) {
+    return;
+  }
+
+  try {
+    const current = localStorage.getItem(TRAJECTORY_STORAGE_KEY);
+    const parsed = current ? JSON.parse(current) as Record<string, TrajectoryPoint[]> : {};
+    parsed[throwId] = points;
+    localStorage.setItem(TRAJECTORY_STORAGE_KEY, JSON.stringify(parsed));
+  } catch {
+    // Swallow localStorage serialization failures.
+  }
+}
+
 export default function DiscActionsDropdown({
   currentDiscs = [],
   sessionId = '',
 }: DiscActionsDropdownProps) {
   const { settings } = useSettings();
-  const { connectDevice, disconnectDevice, connectedDevice } = useDevice();
+  const { connectDevice, connectedDevice } = useDevice();
 
   const getErrorMessage = (error: unknown, fallback: string): string => {
     if (error instanceof Error && error.message) {
@@ -73,7 +150,16 @@ export default function DiscActionsDropdown({
   const [discLon, setDiscLon] = useState<number>(0);
   const [lastRpm, setLastRpm] = useState<number>(0);
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
+  const [activeTrajectory, setActiveTrajectory] = useState<TrajectoryPoint[]>([]);
   const phonePosRef = useRef<{ lat: number; lon: number } | null>(null);
+  const rawTrajectoryRef = useRef<RawTrajectorySample[]>([]);
+  const streamIdleTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const distanceBaselineRef = useRef<number | null>(null);
+  const smoothedDistanceRef = useRef<number | null>(null);
+  const isRunningRef = useRef(false);
+  const elapsedRef = useRef(0);
+  const startTimingRef = useRef<() => void>(() => undefined);
+  const stopTimingRef = useRef<(forceSave?: boolean) => Promise<void>>(async () => undefined);
 
   useEffect(() => {
     setDiscs(currentDiscs);
@@ -87,6 +173,14 @@ export default function DiscActionsDropdown({
   }, [connectedDevice]);
 
   useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
+  useEffect(() => {
+    elapsedRef.current = elapsedTime;
+  }, [elapsedTime]);
+
+  useEffect(() => {
     bleManager.onSyncStatus((status) => {
       if (status === 'error') {
         toast.error('Failed to sync telemetry batch. It will retry on your next throw.');
@@ -98,13 +192,21 @@ export default function DiscActionsDropdown({
 
     // Listen for real-time BLE pings from the disc tracker
     const unsubscribePing = bleManager.onPing((ping: PingData) => {
-      // Only trust GPS data when the firmware has a real fix
-      const hasGpsFix = ping.sats >= 4 && ping.lat !== 0 && ping.lon !== 0;
+      // Only trust GPS data when the firmware has a high-quality fix.
+      const hasGpsFix = hasReliableGpsFix(ping);
 
       // Update disc GPS position
       if (hasGpsFix) {
         setDiscLat(ping.lat);
         setDiscLon(ping.lon);
+        if (isRunningRef.current) {
+          rawTrajectoryRef.current.push({
+            lat: ping.lat,
+            lon: ping.lon,
+            alt: ping.alt,
+            ts: ping.timestamp || Date.now(),
+          });
+        }
       }
 
       // Calculate RPM from gyro_z (firmware sends deg/s; 1 RPM = 6 deg/s)
@@ -118,14 +220,47 @@ export default function DiscActionsDropdown({
 
       // Update tracker distance from phone position to disc position
       if (phonePosRef.current && hasGpsFix) {
-        const distFeet = haversineDistanceFeet(
+        const rawDistFeet = haversineDistanceFeet(
           phonePosRef.current.lat,
           phonePosRef.current.lon,
           ping.lat,
           ping.lon,
         );
-        setTrackerDistance(distFeet);
+
+        if (Number.isFinite(rawDistFeet)) {
+          const isLikelyStationary = ping.speed_mps <= STATIONARY_SPEED_MPS;
+          if (isLikelyStationary) {
+            distanceBaselineRef.current = distanceBaselineRef.current === null
+              ? rawDistFeet
+              : distanceBaselineRef.current * 0.9 + rawDistFeet * 0.1;
+          }
+
+          const baselineFeet = distanceBaselineRef.current ?? 0;
+          let calibratedFeet = Math.max(0, rawDistFeet - baselineFeet);
+          if (calibratedFeet < DISTANCE_NOISE_FLOOR_FEET) {
+            calibratedFeet = 0;
+          }
+
+          const prev = smoothedDistanceRef.current;
+          const smoothedFeet = prev === null
+            ? calibratedFeet
+            : prev + DISTANCE_SMOOTHING_ALPHA * (calibratedFeet - prev);
+
+          smoothedDistanceRef.current = smoothedFeet;
+          setTrackerDistance(smoothedFeet);
+        }
       }
+
+      if (!isRunningRef.current) {
+        startTimingRef.current();
+      }
+
+      if (streamIdleTimerRef.current) {
+        clearTimeout(streamIdleTimerRef.current);
+      }
+      streamIdleTimerRef.current = setTimeout(() => {
+        void stopTimingRef.current(true);
+      }, STREAM_IDLE_STOP_MS);
     });
 
     // Watch phone GPS position for distance calculations
@@ -142,6 +277,10 @@ export default function DiscActionsDropdown({
 
     return () => {
       unsubscribePing();
+      if (streamIdleTimerRef.current) {
+        clearTimeout(streamIdleTimerRef.current);
+        streamIdleTimerRef.current = null;
+      }
       if (geoWatchId !== undefined) navigator.geolocation.clearWatch(geoWatchId);
     };
   }, []);
@@ -265,6 +404,10 @@ export default function DiscActionsDropdown({
     if (isRunning) return;
 
     bleManager.markThrowStarted();
+    rawTrajectoryRef.current = [];
+    distanceBaselineRef.current = null;
+    smoothedDistanceRef.current = null;
+    setActiveTrajectory([]);
 
     setIsRunning(true);
     setJustStopped(false);
@@ -274,7 +417,16 @@ export default function DiscActionsDropdown({
     }, 100);
   };
 
-  const stopTiming = () => {
+  const stopTiming = async (forceSave = false) => {
+    if (!isRunningRef.current) {
+      return;
+    }
+
+    if (streamIdleTimerRef.current) {
+      clearTimeout(streamIdleTimerRef.current);
+      streamIdleTimerRef.current = null;
+    }
+
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -282,23 +434,41 @@ export default function DiscActionsDropdown({
     setIsRunning(false);
     void bleManager.markThrowLanded();
 
-    if (trackerDistance && trackerDistance > 0 && elapsedTime > 0.5) {
+    const finalElapsed = Math.max(0, elapsedRef.current);
+    const trajectory = buildTrajectory(rawTrajectoryRef.current);
+    const trajectoryDistance = trajectory.length > 0
+      ? Math.max(0, trajectory[trajectory.length - 1].distance)
+      : 0;
+
+    if (trajectoryDistance > 0) {
+      setTrackerDistance(trajectoryDistance);
+    }
+
+    if (trajectory.length > 0) {
+      setActiveTrajectory(trajectory);
+    }
+
+    if (finalElapsed > 0.1) {
       setShowThrowResults(true);
 
-      // Auto-save only once per stop (if enabled)
-      if (settings.autoSaveThrows && !justStopped) {
-        handleSaveThrow();
+      // Auto-save at end-of-stream to guarantee throw bundling for statistics.
+      if ((forceSave || settings.autoSaveThrows) && !justStopped) {
+        await handleSaveThrow(finalElapsed, trajectory, trajectoryDistance);
         setJustStopped(true);
       }
     }
   };
 
+  startTimingRef.current = startTiming;
+  stopTimingRef.current = stopTiming;
+
   const resetTiming = () => {
-    stopTiming();
+    void stopTiming();
     setElapsedTime(0);
     setShowThrowResults(false);
     setJustStopped(false);
     setLastRpm(0);
+    setActiveTrajectory([]);
   };
 
   useEffect(() => {
@@ -307,6 +477,10 @@ export default function DiscActionsDropdown({
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      if (streamIdleTimerRef.current) {
+        clearTimeout(streamIdleTimerRef.current);
+        streamIdleTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -314,24 +488,39 @@ export default function DiscActionsDropdown({
     ? `${selectedDisc.name} - ${selectedDisc.type}`
     : 'Disc Actions';
 
-  const handleSaveThrow = async () => {
-    if (!trackerDistance || !elapsedTime || !selectedDisc) return;
+  const handleSaveThrow = async (
+    flightTimeOverride?: number,
+    trajectoryOverride?: TrajectoryPoint[],
+    distanceOverride?: number,
+  ) => {
+    if (!selectedDisc || !sessionId) return;
+
+    const flightTime = flightTimeOverride ?? elapsedRef.current;
+    if (!Number.isFinite(flightTime) || flightTime <= 0) return;
+
+    const distance = Number.isFinite(distanceOverride)
+      ? (distanceOverride as number)
+      : Number.isFinite(trackerDistance)
+      ? (trackerDistance as number)
+      : 0;
+    const trajectory = trajectoryOverride ?? activeTrajectory;
 
     try {
-      await throwAPI.saveThrow({
+      const response = await throwAPI.saveThrow({
         sessionId: sessionId,
         discId: selectedDisc.id,
         teeLat: phonePosRef.current?.lat ?? 0,
         teeLon: phonePosRef.current?.lon ?? 0,
         foundLat: discLat,
         foundLon: discLon,
-        distance: trackerDistance,
+        distance,
         maxRpm: lastRpm,
-        exitVelocity: trackerDistance / elapsedTime,
-        flightTime: elapsedTime,
+        exitVelocity: flightTime > 0 ? distance / flightTime : 0,
+        flightTime,
         state: 'landed',
       });
-      toast.success(`Throw saved: ${trackerDistance} ft in ${elapsedTime.toFixed(2)}s.`);
+      persistThrowTrajectory(response.id, trajectory);
+      toast.success(`Throw saved: ${distance.toFixed(1)} ft in ${flightTime.toFixed(2)}s.`);
     } catch (error) {
       toast.error(getErrorMessage(error, 'Unable to save throw. Please try again.'));
     }
@@ -408,11 +597,12 @@ export default function DiscActionsDropdown({
 
           {showThrowResults && (
             <ThrowResults
-              distance={trackerDistance}
+              distance={trackerDistance ?? 0}
               time={elapsedTime}
               unit={settings.distanceUnit}
               onSaveThrow={handleSaveThrow}
               rpm={lastRpm}
+              trajectoryData={activeTrajectory}
             />
           )}
         </div>
@@ -442,5 +632,15 @@ export default function DiscActionsDropdown({
         />
       )}
     </div>
+  );
+}
+
+function hasReliableGpsFix(ping: PingData): boolean {
+  return (
+    ping.lat !== 0 &&
+    ping.lon !== 0 &&
+    ping.sats >= MIN_SATS_FOR_FIX &&
+    ping.hdop > 0 &&
+    ping.hdop <= MAX_HDOP_FOR_FIX
   );
 }

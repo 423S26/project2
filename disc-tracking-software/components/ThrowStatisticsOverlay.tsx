@@ -4,7 +4,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import ThrowResults from '@/components/disc-actions/ThrowResults';
 import { Trash2 } from 'lucide-react'; // ← Added for trash icon
-import { sessionAPI, throwAPI } from '@/lib/api-client';
+import { sessionAPI, throwAPI, type ThrowRecord } from '@/lib/api-client';
+
+const TRAJECTORY_STORAGE_KEY = 'throwTrajectoryByIdV1';
 
 type ThrowData = {
   id: string;
@@ -17,6 +19,7 @@ type ThrowData = {
   velocity: number;
   rpm: number;
   timestamp: string;
+  trajectoryData?: Array<{ distance: number; deviation: number; height?: number }>;
 };
 
 type SessionOption = {
@@ -36,6 +39,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSe
   const [sessions, setSessions] = useState<SessionOption[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [trajectoryByThrow, setTrajectoryByThrow] = useState<Record<string, Array<{ distance: number; deviation: number; height?: number }>>>({});
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [throwToDelete, setThrowToDelete] = useState<string | null>(null);
@@ -48,7 +52,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSe
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const throwItems = (await throwAPI.getThrows()).map((item: any) => ({
+      const throwItems = (await throwAPI.getThrows()).map((item: ThrowRecord) => ({
         id: item.id,
         sessionId: item.session_id,
         sessionName: item.session_label,
@@ -94,6 +98,18 @@ export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSe
     if (!isOpen) {
       return;
     }
+
+    try {
+      const raw = localStorage.getItem(TRAJECTORY_STORAGE_KEY);
+      if (raw) {
+        setTrajectoryByThrow(JSON.parse(raw) as Record<string, Array<{ distance: number; deviation: number; height?: number }>>);
+      } else {
+        setTrajectoryByThrow({});
+      }
+    } catch {
+      setTrajectoryByThrow({});
+    }
+
     void loadThrows();
   }, [isOpen]);
 
@@ -194,6 +210,7 @@ export default function ThrowStatisticsOverlay({ isOpen, onCloseAction, activeSe
                     time={throwData.time}
                     rpm={throwData.rpm}
                     unit="feet"
+                    trajectoryData={trajectoryByThrow[throwData.id] ?? throwData.trajectoryData}
                   />
                 </div>
               ))

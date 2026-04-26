@@ -340,21 +340,37 @@ func SaveThrow(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
+		var sessionDeviceID string
+		err = db.QueryRow(`
+			SELECT device_id
+			FROM sessions
+			WHERE id = $1 AND user_id = $2
+		`, req.SessionId, userID).Scan(&sessionDeviceID)
+		if err == sql.ErrNoRows {
+			SendProtobufError(c, http.StatusBadRequest, "invalid session_id")
+			return
+		}
+		if err != nil {
+			log.Printf("[SaveThrow] Failed to fetch session device_id: %v", err)
+			SendProtobufError(c, http.StatusInternalServerError, "Failed to validate session")
+			return
+		}
+
 		throwID := uuid.New().String()
 		now := time.Now()
 
 		_, err = db.Exec(`
 			INSERT INTO throws (
-				id, user_id, session_id, disc_id, timestamp,
+				id, user_id, session_id, device_id, disc_id, timestamp,
 				tee_location, found_location, distance, max_rpm, exit_velocity,
 				flight_time, state, is_ob, wobble_g, hdop, created_at
 			) VALUES (
-				$1, $2, $3, $4, $5,
-				ST_SetSRID(ST_MakePoint($6, $7, $8), 4326),
-				ST_SetSRID(ST_MakePoint($9, $10, $11), 4326),
-				$12, $13, $14, $15, $16, $17, $18, $19, $20
+				$1, $2, $3, $4, $5, $6,
+				ST_SetSRID(ST_MakePoint($7, $8, $9), 4326),
+				ST_SetSRID(ST_MakePoint($10, $11, $12), 4326),
+				$13, $14, $15, $16, $17, $18, $19, $20, $21
 			)
-		`, throwID, userID, req.SessionId, req.DiscId, now,
+		`, throwID, userID, req.SessionId, sessionDeviceID, req.DiscId, now,
 			req.TeeLon, req.TeeLat, req.TeeAlt,
 			req.FoundLon, req.FoundLat, req.FoundAlt,
 			req.Distance, req.MaxRpm, req.ExitVelocity, req.FlightTime,
@@ -362,6 +378,7 @@ func SaveThrow(db *sql.DB) gin.HandlerFunc {
 		)
 
 		if err != nil {
+			log.Printf("[SaveThrow] Database insert failed: %v", err)
 			SendProtobufError(c, http.StatusInternalServerError, "Failed to save throw")
 			return
 		}

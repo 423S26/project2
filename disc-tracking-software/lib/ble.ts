@@ -256,11 +256,13 @@ export class BLEManager {
   private onSyncStatusCallback?: (status: 'idle' | 'success' | 'error') => void;
   private readonly BLE_CHUNK_SIZE = 20;
   private readonly FRAME_IDLE_FLUSH_MS = 40;
-  private readonly FRAGMENT_STALE_RESET_MS = 2000;
-  private readonly MAX_FRAME_BYTES = 2048;
+  private readonly FRAGMENT_STALE_RESET_MS = 5000;
+  private readonly MAX_FRAME_BYTES = 16384;
   private rxFrameBuffer: number[] = [];
   private frameFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private fragmentStaleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastHoldLogAt = 0;
+  private lastHoldLogSize = -1;
 
   private readonly API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
   private readonly PENDING_BATCHES_KEY = 'pendingTelemetryBatchesV1';
@@ -421,12 +423,13 @@ export class BLEManager {
     }
 
     if (this.rxFrameBuffer.length > this.MAX_FRAME_BYTES) {
+      const overflowBytes = this.rxFrameBuffer.length - this.MAX_FRAME_BYTES;
+      this.rxFrameBuffer = this.rxFrameBuffer.slice(overflowBytes);
       pipelineLog(
         'DECODE:PROTO',
         'warn',
-        `RX frame exceeded ${this.MAX_FRAME_BYTES}B; resetting assembler to prevent overflow`,
+        `RX frame exceeded ${this.MAX_FRAME_BYTES}B; dropped oldest ${overflowBytes}B to keep stream alive`,
       );
-      this.resetRxAssembler();
     }
   }
 
@@ -474,6 +477,27 @@ export class BLEManager {
     this.clearFrameFlushTimer();
     this.clearFragmentStaleTimer();
     this.rxFrameBuffer = [];
+    this.lastHoldLogAt = 0;
+    this.lastHoldLogSize = -1;
+  }
+
+  private logHeldFragment(size: number, trailing: boolean = false): void {
+    const now = Date.now();
+    const sizeChanged = this.lastHoldLogSize !== size;
+    const quietWindowElapsed = now - this.lastHoldLogAt >= 1500;
+    if (!sizeChanged && !quietWindowElapsed) {
+      return;
+    }
+
+    this.lastHoldLogAt = now;
+    this.lastHoldLogSize = size;
+
+    if (trailing) {
+      pipelineLog('DECODE:PROTO', 'info', `Holding ${size}B trailing fragment for the next BLE payload`);
+      return;
+    }
+
+    pipelineLog('DECODE:PROTO', 'warn', `Holding ${size}B awaiting a complete protobuf frame`);
   }
 
   private flushAssembledFrame(): void {
@@ -488,14 +512,28 @@ export class BLEManager {
       this.processPingFrame(frame);
     }
 
+    if (remainder.length > 0) {
+      try {
+        const probe = decodePing(remainder);
+        if (this.isLikelyCompletePing(probe)) {
+          this.processPingFrame(remainder);
+          this.rxFrameBuffer = [];
+          this.clearFragmentStaleTimer();
+          return;
+        }
+      } catch {
+        // Keep buffering partial data until a complete frame can be decoded.
+      }
+    }
+
     if (frames.length === 0 && remainder.length === data.length && remainder.length > 0) {
-      pipelineLog('DECODE:PROTO', 'warn', `Holding ${remainder.length}B awaiting a complete protobuf frame`);
+      this.logHeldFragment(remainder.length);
       this.scheduleFragmentStaleReset();
       return;
     }
 
     if (remainder.length > 0) {
-      pipelineLog('DECODE:PROTO', 'info', `Holding ${remainder.length}B trailing fragment for the next BLE payload`);
+      this.logHeldFragment(remainder.length, true);
       this.scheduleFragmentStaleReset();
       return;
     }
@@ -520,7 +558,9 @@ export class BLEManager {
       return;
     }
 
-    if (!ping.device_id) {
+    // Always prefer the currently connected app-level device id for
+    // backend ownership checks; firmware-embedded ids may differ.
+    if (this.connectedDeviceId) {
       ping.device_id = this.connectedDeviceId;
     }
 
@@ -607,7 +647,11 @@ export class BLEManager {
 
   private async uploadBatch(pings: PingData[]): Promise<void> {
     const deviceId = this.connectedDeviceId || pings[0]?.device_id || '';
-    const payload = encodeSyncBatch(pings, deviceId);
+    const normalizedPings = pings.map((ping) => ({
+      ...ping,
+      device_id: deviceId || ping.device_id,
+    }));
+    const payload = encodeSyncBatch(normalizedPings, deviceId);
     const requestBody = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer;
 
     const authHeaders = await this.getAuthHeaders();
@@ -618,7 +662,15 @@ export class BLEManager {
     });
 
     if (!response.ok) {
-      pipelineLog('SYNC:UPLOAD', 'error', `HTTP ${response.status} — ${pings.length} pings failed`);
+      let errorDetail = '';
+      try {
+        errorDetail = (await response.text()).trim();
+      } catch {
+        errorDetail = '';
+      }
+
+      const detailSuffix = errorDetail ? ` | ${errorDetail.slice(0, 200)}` : '';
+      pipelineLog('SYNC:UPLOAD', 'error', `HTTP ${response.status} — ${pings.length} pings failed${detailSuffix}`);
       throw new Error(`Telemetry upload failed: ${response.status}`);
     }
 

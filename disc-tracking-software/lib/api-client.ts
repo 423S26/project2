@@ -791,14 +791,37 @@ function decodeThrowMutationResponse(response: Uint8Array, operation: string): {
   assert(response.length > 0, `Received empty protobuf response while attempting to ${operation}`);
 
   const decoder = new ProtoDecoder(response);
-  const message = decoder.decodeString();
-  assert(message.length > 0, `Received empty message while attempting to ${operation}`);
-  assert(
-    decoder.getOffset() < response.length,
-    `Received truncated protobuf response while attempting to ${operation}: missing ID field`,
-  );
+  let message = '';
+  let id = '';
 
-  const id = decoder.decodeString();
+  try {
+    while (decoder.getOffset() < response.length) {
+      const tag = decoder.decodeVarint();
+      const wireType = tag & 0x07;
+      const fieldNumber = tag >>> 3;
+
+      if (wireType === 2 && fieldNumber === 1) {
+        message = decoder.decodeString();
+        continue;
+      }
+
+      if (wireType === 2 && fieldNumber === 2) {
+        id = decoder.decodeString();
+        continue;
+      }
+
+      skipUnknownField(decoder, wireType);
+    }
+  } catch {
+    // Fallback for legacy payloads encoded as two raw strings without tags.
+    const fallbackDecoder = new ProtoDecoder(response);
+    message = fallbackDecoder.decodeString();
+    if (fallbackDecoder.getOffset() < response.length) {
+      id = fallbackDecoder.decodeString();
+    }
+  }
+
+  assert(message.length > 0, `Received empty message while attempting to ${operation}`);
   assert(id.length > 0, `Received empty ID while attempting to ${operation}`);
 
   return { message, id };
