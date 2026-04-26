@@ -264,7 +264,9 @@ export class BLEManager {
   private lastHoldLogAt = 0;
   private lastHoldLogSize = -1;
 
-  private readonly API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+  private readonly API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
+    .replace(/\/+$/, '')
+    .replace(/\/api\/v1$/, '');
   private readonly PENDING_BATCHES_KEY = 'pendingTelemetryBatchesV1';
 
   constructor() {

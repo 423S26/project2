@@ -176,7 +176,9 @@ export default function LiveTracker({
 	}, [onTelemetryAction]);
 
 	const POLL_INTERVAL = 1000; // Poll every 1 second
-	const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+	const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
+		.replace(/\/+$/, '')
+		.replace(/\/api\/v1$/, '');
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 	const lastToastRef = useRef<{ message: string; at: number }>({ message: '', at: 0 });
 	const hasShownConnectedToastRef = useRef(false);
