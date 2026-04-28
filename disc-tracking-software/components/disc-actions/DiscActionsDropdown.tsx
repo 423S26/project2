@@ -13,7 +13,7 @@ import AddDiscPopup from './AddDiscPopup';
 import { Disc } from './types';
 import { discAPI, throwAPI } from '@/lib/api-client';
 import { bleManager } from '@/lib/ble';
-import { PingData } from '@/lib/pb/codec';
+import { Ping } from '@/lib/pb/hardware';
 import { toast } from 'sonner';
 
 type DiscActionsDropdownProps = {
@@ -36,7 +36,7 @@ type RawTrajectorySample = {
 
 const STREAM_IDLE_STOP_MS = 900;
 const TRAJECTORY_STORAGE_KEY = 'throwTrajectoryByIdV1';
-const MIN_SATS_FOR_FIX = 6;
+const MIN_SATS_FOR_FIX = 5;
 const MAX_HDOP_FOR_FIX = 2.5;
 const STATIONARY_SPEED_MPS = 0.8;
 const DISTANCE_NOISE_FLOOR_FEET = 10;
@@ -146,6 +146,8 @@ export default function DiscActionsDropdown({
   const [justStopped, setJustStopped] = useState(false);
 
   // Telemetry state from BLE pings
+  const [currentPing, setCurrentPing] = useState<Ping | null>(null);
+  const [rssi, setRssi] = useState<number | null>(null);
   const [discLat, setDiscLat] = useState<number>(0);
   const [discLon, setDiscLon] = useState<number>(0);
   const [lastRpm, setLastRpm] = useState<number>(0);
@@ -191,7 +193,9 @@ export default function DiscActionsDropdown({
     });
 
     // Listen for real-time BLE pings from the disc tracker
-    const unsubscribePing = bleManager.onPing((ping: PingData) => {
+    const unsubscribePing = bleManager.onPing((ping: Ping) => {
+      setCurrentPing(ping);
+
       // Only trust GPS data when the firmware has a high-quality fix.
       const hasGpsFix = hasReliableGpsFix(ping);
 
@@ -209,13 +213,13 @@ export default function DiscActionsDropdown({
         }
       }
 
-      // Calculate RPM from gyro_z (firmware sends deg/s; 1 RPM = 6 deg/s)
-      const rpm = Math.abs(ping.gyro_z) / 6;
+      // Calculate RPM from gyroZ (firmware sends deg/s; 1 RPM = 6 deg/s)
+      const rpm = Math.abs(ping.gyroZ) / 6;
       if (rpm >= 5) setLastRpm(rpm); // noise floor
 
       // Update battery level from firmware
-      if (ping.batt_pct > 0) {
-        setBatteryLevel(ping.batt_pct);
+      if (ping.battPct > 0) {
+        setBatteryLevel(ping.battPct);
       }
 
       // Update tracker distance from phone position to disc position
@@ -228,7 +232,7 @@ export default function DiscActionsDropdown({
         );
 
         if (Number.isFinite(rawDistFeet)) {
-          const isLikelyStationary = ping.speed_mps <= STATIONARY_SPEED_MPS;
+          const isLikelyStationary = ping.speedMps <= STATIONARY_SPEED_MPS;
           if (isLikelyStationary) {
             distanceBaselineRef.current = distanceBaselineRef.current === null
               ? rawDistFeet
@@ -263,6 +267,11 @@ export default function DiscActionsDropdown({
       }, STREAM_IDLE_STOP_MS);
     });
 
+    // Listen for RSSI updates from BLE connection
+    const unsubscribeRssi = bleManager.onRssi((rssiValue: number) => {
+      setRssi(rssiValue);
+    });
+
     // Watch phone GPS position for distance calculations
     let geoWatchId: number | undefined;
     if ('geolocation' in navigator) {
@@ -277,6 +286,7 @@ export default function DiscActionsDropdown({
 
     return () => {
       unsubscribePing();
+      unsubscribeRssi();
       if (streamIdleTimerRef.current) {
         clearTimeout(streamIdleTimerRef.current);
         streamIdleTimerRef.current = null;
@@ -568,6 +578,8 @@ export default function DiscActionsDropdown({
             batteryLevel={batteryLevel ?? undefined}
             discLat={discLat}
             discLon={discLon}
+            currentPing={currentPing}
+            rssi={rssi}
           />
         </>
       )}
@@ -635,7 +647,7 @@ export default function DiscActionsDropdown({
   );
 }
 
-function hasReliableGpsFix(ping: PingData): boolean {
+function hasReliableGpsFix(ping: Ping): boolean {
   return (
     ping.lat !== 0 &&
     ping.lon !== 0 &&

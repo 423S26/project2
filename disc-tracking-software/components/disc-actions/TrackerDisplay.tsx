@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { Battery, ArrowRight } from 'lucide-react';
 import DirectionalTrackingOverlay from './DirectionalTrackingOverlay';
 import { DistanceUnit } from './types';
+import { Ping } from '@/lib/pb/hardware';
 
 type Props = {
   distance: number;       // always in feet from parent
@@ -12,9 +13,11 @@ type Props = {
   batteryLevel?: number;  // 0-100, from device telemetry
   discLat?: number;       // disc GPS latitude from telemetry
   discLon?: number;       // disc GPS longitude from telemetry
+  currentPing?: Ping | null;
+  rssi?: number | null;
 };
 
-export default function TrackerDisplay({ distance, unit, batteryLevel, discLat, discLon }: Props) {
+export default function TrackerDisplay({ distance, unit, batteryLevel, discLat, discLon, currentPing, rssi }: Props) {
   const displayedDistance = unit === 'meters' 
     ? (distance * 0.3048).toFixed(1) 
     : distance.toFixed(0);
@@ -68,6 +71,8 @@ export default function TrackerDisplay({ distance, unit, batteryLevel, discLat, 
         unit={unit}
         discLat={discLat}
         discLon={discLon}
+        currentPing={currentPing}
+        rssi={rssi}
       />
     </>
   );

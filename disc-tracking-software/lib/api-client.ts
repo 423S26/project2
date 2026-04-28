@@ -2,7 +2,8 @@
 // Uses Protobuf encoding for all requests/responses
 // All requests are made to http://localhost:8080/api/v1
 
-import { ProtoEncoder, ProtoDecoder } from './pb/codec';
+import { ErrorResponse } from './pb/hardware';
+import { SessionRequest, SessionResponse, GetActiveSessionsResponse, EndSessionRequest, EndSessionResponse, DiscRequest, DiscResponse, GetUserDiscsResponse, DeleteDiscRequest, DeleteDiscResponse, ThrowRequest, ThrowResponse, GetThrowsResponse, UserSettingsRequest, UserSettingsResponse } from './pb/api';
 import { getClientAuthHeaders } from './auth-headers';
 import { pipelineLog } from './ble';
 import {
@@ -177,14 +178,8 @@ async function apiCallProtobuf<T>(
             if (contentType?.includes("protobuf")) {
               const data = await resp.arrayBuffer();
               if (data.byteLength > 0) {
-                const decoder = new ProtoDecoder(new Uint8Array(data));
-                const errorMsg = decoder.decodeMessage();
-                const decodedField = typeof errorMsg.field_1 === 'string'
-                  ? errorMsg.field_1
-                  : typeof errorMsg.error === 'string'
-                    ? errorMsg.error
-                    : null;
-                errorMessage = decodedField ?? errorMessage;
+                const errorMsg = ErrorResponse.fromBinary(new Uint8Array(data));
+                errorMessage = errorMsg.error || errorMessage;
               }
             } else if (contentType?.includes("json")) {
               const errorData = await resp.json();
@@ -258,264 +253,9 @@ async function apiCallProtobuf<T>(
   }
 }
 
-function skipUnknownField(decoder: ProtoDecoder, wireType: number): void {
-  switch (wireType) {
-    case 0:
-      decoder.decodeVarint();
-      break;
-    case 1:
-      decoder.readBytes(8);
-      break;
-    case 2: {
-      const length = decoder.decodeVarint();
-      decoder.readBytes(length);
-      break;
-    }
-    case 5:
-      decoder.readBytes(4);
-      break;
-    default:
-      throw new Error(`Unsupported wire type: ${wireType}`);
-  }
-}
-
-function decodeProtoTimestamp(decoder: ProtoDecoder): string {
-  const length = decoder.decodeVarint();
-  if (length === 0) {
-    return '';
-  }
-
-  const bytes = decoder.readBytes(length);
-  const nested = new ProtoDecoder(bytes);
-  let seconds = 0;
-  let nanos = 0;
-
-  while (nested.getOffset() < bytes.length) {
-    const tag = nested.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    if (wireType !== 0) {
-      skipUnknownField(nested, wireType);
-      continue;
-    }
-
-    if (fieldNumber === 1) {
-      seconds = nested.decodeVarint();
-    } else if (fieldNumber === 2) {
-      nanos = nested.decodeVarint();
-    } else {
-      nested.decodeVarint();
-    }
-  }
-
-  return new Date(seconds * 1000 + nanos / 1000000).toISOString();
-}
-
-// Convert decoded proto response to frontend Session
-function decodeSession(data: Uint8Array): Session {
-  const decoder = new ProtoDecoder(data);
-  const session: Session = {
-    id: '',
-    user_id: '',
-    device_id: '',
-    status: '',
-    started_at: '',
-    throw_count: 0,
-    created_at: '',
-  };
-
-  while (decoder.getOffset() < data.length) {
-    const tag = decoder.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    switch (fieldNumber) {
-      case 1:
-        session.id = decoder.decodeString();
-        break;
-      case 2:
-        session.user_id = decoder.decodeString();
-        break;
-      case 3:
-        session.device_id = decoder.decodeString();
-        break;
-      case 4:
-        session.status = decoder.decodeString();
-        break;
-      case 5:
-        session.started_at = decodeProtoTimestamp(decoder);
-        break;
-      case 6:
-        // We intentionally ignore ended_at for this simplified frontend model.
-        decodeProtoTimestamp(decoder);
-        break;
-      case 7:
-        session.throw_count = decoder.decodeVarint();
-        break;
-      case 8:
-        session.created_at = decodeProtoTimestamp(decoder);
-        break;
-      default:
-        skipUnknownField(decoder, wireType);
-        break;
-    }
-  }
-
-  if (!session.started_at) {
-    session.started_at = new Date().toISOString();
-  }
-  if (!session.created_at) {
-    session.created_at = session.started_at;
-  }
-
-  return session;
-}
-
-function decodeSessionList(data: Uint8Array): Session[] {
-  const decoder = new ProtoDecoder(data);
-  const sessions: Session[] = [];
-
-  while (decoder.getOffset() < data.length) {
-    const tag = decoder.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    if (fieldNumber === 1 && wireType === 2) {
-      const length = decoder.decodeVarint();
-      const bytes = decoder.readBytes(length);
-      sessions.push(decodeSession(bytes));
-      continue;
-    }
-
-    skipUnknownField(decoder, wireType);
-  }
-
-  return sessions;
-}
-
-function decodeThrowRecord(data: Uint8Array): ThrowRecord {
-  const decoder = new ProtoDecoder(data);
-  const item: ThrowRecord = {
-    id: '',
-    session_id: '',
-    session_label: '',
-    disc_name: '',
-    disc_type: '',
-    distance: 0,
-    flight_time: 0,
-    exit_velocity: 0,
-    max_rpm: 0,
-    timestamp: '',
-  };
-
-  while (decoder.getOffset() < data.length) {
-    const tag = decoder.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    switch (fieldNumber) {
-      case 1:
-        item.id = decoder.decodeString();
-        break;
-      case 2:
-        item.session_id = decoder.decodeString();
-        break;
-      case 3:
-        item.session_label = decoder.decodeString();
-        break;
-      case 4:
-        item.disc_name = decoder.decodeString();
-        break;
-      case 5:
-        item.disc_type = decoder.decodeString();
-        break;
-      case 6:
-        item.distance = decoder.decodeDouble();
-        break;
-      case 7:
-        item.flight_time = decoder.decodeDouble();
-        break;
-      case 8:
-        item.exit_velocity = decoder.decodeDouble();
-        break;
-      case 9:
-          item.timestamp = decodeProtoTimestamp(decoder);
-          break;
-        case 10:
-          item.max_rpm = decoder.decodeDouble();
-          break;
-        default:
-        skipUnknownField(decoder, wireType);
-        break;
-    }
-  }
-
-  if (!item.timestamp) {
-    item.timestamp = new Date().toISOString();
-  }
-
-  return item;
-}
-
-function decodeThrowList(data: Uint8Array): ThrowRecord[] {
-  const decoder = new ProtoDecoder(data);
-  const throws: ThrowRecord[] = [];
-
-  while (decoder.getOffset() < data.length) {
-    const tag = decoder.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    if (fieldNumber === 1 && wireType === 2) {
-      const length = decoder.decodeVarint();
-      const bytes = decoder.readBytes(length);
-      throws.push(decodeThrowRecord(bytes));
-      continue;
-    }
-
-    skipUnknownField(decoder, wireType);
-  }
-
-  return throws;
-}
-
-// Convert decoded proto response to frontend Disc
-// DiscResponse fields: id=1, user_id=2, name=3, type=4, weight=5, color=6, created_at=7
-function decodeDisc(data: Uint8Array): Disc {
-  const decoder = new ProtoDecoder(data);
-  const disc: Disc = {
-    id: '',
-    user_id: '',
-    name: '',
-    type: '',
-    weight: 0,
-    color: '',
-    created_at: '',
-  };
-
-  while (decoder.getOffset() < data.length) {
-    const tag = decoder.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    switch (fieldNumber) {
-      case 1: disc.id = decoder.decodeString(); break;
-      case 2: disc.user_id = decoder.decodeString(); break;
-      case 3: disc.name = decoder.decodeString(); break;
-      case 4: disc.type = decoder.decodeString(); break;
-      case 5: disc.weight = decoder.decodeVarint(); break;
-      case 6: disc.color = decoder.decodeString(); break;
-      case 7: disc.created_at = decodeProtoTimestamp(decoder); break;
-      default: skipUnknownField(decoder, wireType); break;
-    }
-  }
-
-  if (!disc.created_at) {
-    disc.created_at = new Date().toISOString();
-  }
-
-  return disc;
+function timestampToIsoString(ts: { seconds: bigint | number, nanos: number } | undefined | null): string {
+    if (!ts) return new Date().toISOString();
+    return new Date(Number(ts.seconds) * 1000 + ts.nanos / 1000000).toISOString();
 }
 
 // Session API
@@ -526,8 +266,8 @@ export const sessionAPI = {
       assertType(deviceId, 'string', 'deviceId');
       assert(deviceId.length > 0, 'Device ID is empty');
 
-      const encoded = ProtoEncoder.encodeObject({
-        device_id: deviceId,
+      const encoded = SessionRequest.toBinary({
+        deviceId: deviceId,
         notes: notes || "",
       });
 
@@ -537,7 +277,16 @@ export const sessionAPI = {
         "POST"
       );
 
-      return decodeSession(response);
+      const resp = SessionResponse.fromBinary(response);
+      return {
+        id: resp.id,
+        user_id: resp.userId,
+        device_id: resp.deviceId,
+        status: resp.status,
+        started_at: timestampToIsoString(resp.startedAt),
+        throw_count: resp.throwCount,
+        created_at: timestampToIsoString(resp.createdAt)
+      };
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.createSession');
       throw error;
@@ -550,17 +299,15 @@ export const sessionAPI = {
       assertType(sessionId, 'string', 'sessionId');
       assert(sessionId.length > 0, 'Session ID is empty');
 
+      const encoded = EndSessionRequest.toBinary({ sessionId });
       const response = await apiCallProtobuf<Uint8Array>(
         `/sessions/${sessionId}/end`,
-        undefined,
+        encoded,
         "PATCH"
       );
 
-      const decoder = new ProtoDecoder(response);
-      const message = decoder.decodeString();
-      assert(message.length > 0, 'Received empty message from server');
-
-      return {message};
+      const resp = EndSessionResponse.fromBinary(response);
+      return {message: resp.message || 'Session ended'};
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.endSession');
       throw error;
@@ -571,8 +318,16 @@ export const sessionAPI = {
     try {
       const response = await apiCallProtobuf<Uint8Array>("/sessions/active");
 
-      const sessions = decodeSessionList(response);
-      return sessions.length > 0 ? sessions : [];
+      const resp = GetActiveSessionsResponse.fromBinary(response);
+      return resp.sessions.map(s => ({
+        id: s.id,
+        user_id: s.userId,
+        device_id: s.deviceId,
+        status: s.status,
+        started_at: timestampToIsoString(s.startedAt),
+        throw_count: s.throwCount,
+        created_at: timestampToIsoString(s.createdAt)
+      }));
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'sessionAPI.getActiveSessions');
       throw error;
@@ -586,35 +341,16 @@ export const discAPI = {
     try {
       const response = await apiCallProtobuf<Uint8Array>("/discs");
 
-      const decoder = new ProtoDecoder(response);
-      const discs: Disc[] = [];
-
-      try {
-        while (decoder.getOffset() < response.length) {
-          const tag = decoder.decodeVarint();
-          const wireType = tag & 0x07;
-          const fieldNumber = tag >>> 3;
-
-          if (fieldNumber === 1 && wireType === 2) {
-            const discLength = decoder.decodeVarint();
-            const discBytes = decoder.readBytes(discLength);
-            discs.push(decodeDisc(discBytes));
-          } else {
-            skipUnknownField(decoder, wireType);
-          }
-        }
-      } catch (decodeError) {
-        if (discs.length > 0 && typeof window === 'undefined') {
-          console.warn('[discAPI] Partial disc list decoded:', {
-            decodedCount: discs.length,
-            error: (decodeError as Error).message,
-          });
-        } else if (discs.length === 0) {
-          throw decodeError;
-        }
-      }
-
-      return discs.length > 0 ? discs : [];
+      const resp = GetUserDiscsResponse.fromBinary(response);
+      return resp.discs.map(d => ({
+        id: d.id,
+        user_id: d.userId,
+        name: d.name,
+        type: d.type,
+        weight: d.weight,
+        color: d.color,
+        created_at: timestampToIsoString(d.createdAt)
+      }));
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'discAPI.getUserDiscs');
       throw error;
@@ -637,12 +373,7 @@ export const discAPI = {
       assert(type.length > 0, 'Disc type is empty');
       assert(weight > 0, 'Disc weight must be positive');
 
-      const encoded = ProtoEncoder.encodeObject({
-        name,
-        type,
-        weight,
-        color,
-      });
+      const encoded = DiscRequest.toBinary({ name, type, weight, color });
 
       const response = await apiCallProtobuf<Uint8Array>(
         "/discs",
@@ -650,7 +381,16 @@ export const discAPI = {
         "POST"
       );
 
-      return decodeDisc(response);
+      const d = DiscResponse.fromBinary(response);
+      return {
+        id: d.id,
+        user_id: d.userId,
+        name: d.name,
+        type: d.type,
+        weight: d.weight,
+        color: d.color,
+        created_at: timestampToIsoString(d.createdAt)
+      };
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'discAPI.createDisc');
       throw error;
@@ -669,11 +409,8 @@ export const discAPI = {
         "DELETE"
       );
 
-      const decoder = new ProtoDecoder(response);
-      const message = decoder.decodeString();
-      assert(message.length > 0, 'Received empty message from server');
-
-      return {message};
+      const resp = DeleteDiscResponse.fromBinary(response);
+      return {message: resp.message || 'Disc deleted'};
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'discAPI.deleteDisc');
       throw error;
@@ -722,23 +459,23 @@ export const throwAPI = {
       assert(throwData.foundLat >= -90 && throwData.foundLat <= 90, 'Found latitude out of range');
       assert(throwData.foundLon >= -180 && throwData.foundLon <= 180, 'Found longitude out of range');
 
-      const encoded = ProtoEncoder.encodeObject({
-        session_id: throwData.sessionId,
-        disc_id: throwData.discId,
-        tee_lat: throwData.teeLat,
-        tee_lon: throwData.teeLon,
-        tee_alt: throwData.teeAlt,
-        found_lat: throwData.foundLat,
-        found_lon: throwData.foundLon,
-        found_alt: throwData.foundAlt,
-        distance: throwData.distance,
-        max_rpm: throwData.maxRpm,
-        exit_velocity: throwData.exitVelocity,
-        flight_time: throwData.flightTime,
-        state: throwData.state,
-        is_ob: throwData.isOb,
-        wobble_g: throwData.wobbleG,
-        hdop: throwData.hdop,
+      const encoded = ThrowRequest.toBinary({
+        sessionId: throwData.sessionId,
+        discId: throwData.discId,
+        teeLat: throwData.teeLat,
+        teeLon: throwData.teeLon,
+        teeAlt: throwData.teeAlt || 0,
+        foundLat: throwData.foundLat,
+        foundLon: throwData.foundLon,
+        foundAlt: throwData.foundAlt || 0,
+        distance: throwData.distance || 0,
+        maxRpm: throwData.maxRpm || 0,
+        exitVelocity: throwData.exitVelocity || 0,
+        flightTime: throwData.flightTime || 0,
+        state: throwData.state || '',
+        isOb: throwData.isOb || false,
+        wobbleG: throwData.wobbleG || 0,
+        hdop: throwData.hdop || 0,
       });
 
       const response = await apiCallProtobuf<Uint8Array>(
@@ -747,7 +484,8 @@ export const throwAPI = {
         "POST"
       );
 
-      return decodeThrowMutationResponse(response, 'save throw');
+      const resp = ThrowResponse.fromBinary(response);
+      return { message: resp.message || 'Throw saved', id: resp.id };
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.saveThrow');
       throw error;
@@ -760,7 +498,20 @@ export const throwAPI = {
         ? `/throws?sessionId=${encodeURIComponent(sessionId)}`
         : "/throws";
       const response = await apiCallProtobuf<Uint8Array>(endpoint, undefined, "GET");
-      return decodeThrowList(response);
+      
+      const resp = GetThrowsResponse.fromBinary(response);
+      return resp.throws.map(t => ({
+        id: t.id,
+        session_id: t.sessionId,
+        session_label: t.sessionLabel,
+        disc_name: t.discName,
+        disc_type: t.discType,
+        distance: t.distance,
+        flight_time: t.flightTime,
+        exit_velocity: t.exitVelocity,
+        max_rpm: t.maxRpm || 0,
+        timestamp: timestampToIsoString(t.timestamp),
+      }));
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.getThrows');
       throw error;
@@ -779,7 +530,8 @@ export const throwAPI = {
         "DELETE"
       );
 
-      return decodeThrowMutationResponse(response, 'delete throw');
+      const resp = ThrowResponse.fromBinary(response);
+      return { message: resp.message || 'Throw deleted', id: resp.id || throwId };
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'throwAPI.deleteThrow');
       throw error;
@@ -787,139 +539,22 @@ export const throwAPI = {
   },
 };
 
-function decodeThrowMutationResponse(response: Uint8Array, operation: string): {message: string; id: string} {
-  assert(response.length > 0, `Received empty protobuf response while attempting to ${operation}`);
-
-  const decoder = new ProtoDecoder(response);
-  let message = '';
-  let id = '';
-
-  try {
-    while (decoder.getOffset() < response.length) {
-      const tag = decoder.decodeVarint();
-      const wireType = tag & 0x07;
-      const fieldNumber = tag >>> 3;
-
-      if (wireType === 2 && fieldNumber === 1) {
-        message = decoder.decodeString();
-        continue;
-      }
-
-      if (wireType === 2 && fieldNumber === 2) {
-        id = decoder.decodeString();
-        continue;
-      }
-
-      skipUnknownField(decoder, wireType);
-    }
-  } catch {
-    // Fallback for legacy payloads encoded as two raw strings without tags.
-    const fallbackDecoder = new ProtoDecoder(response);
-    message = fallbackDecoder.decodeString();
-    if (fallbackDecoder.getOffset() < response.length) {
-      id = fallbackDecoder.decodeString();
-    }
-  }
-
-  assert(message.length > 0, `Received empty message while attempting to ${operation}`);
-  assert(id.length > 0, `Received empty ID while attempting to ${operation}`);
-
-  return { message, id };
-}
-
-function decodeTimestampMessage(decoder: ProtoDecoder): string {
-  const length = decoder.decodeVarint();
-  const endOffset = decoder.getOffset() + length;
-  let seconds = 0;
-  let nanos = 0;
-
-  while (decoder.getOffset() < endOffset) {
-    const tag = decoder.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    if (fieldNumber === 1 && wireType === 0) {
-      seconds = decoder.decodeVarint();
-    } else if (fieldNumber === 2 && wireType === 0) {
-      nanos = decoder.decodeVarint();
-    } else if (wireType === 2) {
-      decoder.readBytes(decoder.decodeVarint());
-    } else if (wireType === 1) {
-      decoder.readBytes(8);
-    } else if (wireType === 5) {
-      decoder.readBytes(4);
-    } else {
-      decoder.decodeVarint();
-    }
-  }
-
-  return new Date(seconds * 1000 + nanos / 1000000).toISOString();
-}
-
-function decodeUserSettingsResponse(response: Uint8Array): UserSettings {
-  const decoder = new ProtoDecoder(response);
-  let id = '';
-  let userId = '';
-  let bagLocationLat: number | undefined;
-  let bagLocationLon: number | undefined;
-  let preferredUnit = 'meters';
-  let notificationsEnabled = true;
-  let autoSaveEnabled = true;
-  let updatedAt = new Date().toISOString();
-
-  while (decoder.getOffset() < response.length) {
-    const tag = decoder.decodeVarint();
-    const wireType = tag & 0x07;
-    const fieldNumber = tag >>> 3;
-
-    if (fieldNumber === 1 && wireType === 2) {
-      id = decoder.decodeString();
-    } else if (fieldNumber === 2 && wireType === 2) {
-      userId = decoder.decodeString();
-    } else if (fieldNumber === 3 && wireType === 1) {
-      bagLocationLat = decoder.decodeDouble();
-    } else if (fieldNumber === 4 && wireType === 1) {
-      bagLocationLon = decoder.decodeDouble();
-    } else if (fieldNumber === 5 && wireType === 2) {
-      preferredUnit = decoder.decodeString();
-    } else if (fieldNumber === 6 && wireType === 0) {
-      notificationsEnabled = decoder.decodeBoolean();
-    } else if (fieldNumber === 7 && wireType === 0) {
-      autoSaveEnabled = decoder.decodeBoolean();
-    } else if (fieldNumber === 8 && wireType === 2) {
-      updatedAt = decodeTimestampMessage(decoder);
-    } else if (wireType === 2) {
-      decoder.readBytes(decoder.decodeVarint());
-    } else if (wireType === 1) {
-      decoder.readBytes(8);
-    } else if (wireType === 5) {
-      decoder.readBytes(4);
-    } else {
-      decoder.decodeVarint();
-    }
-  }
-
-  assert(id.length > 0, 'Received empty settings ID from server');
-  assert(userId.length > 0, 'Received empty user ID from server');
-
-  return {
-    id,
-    user_id: userId,
-    bag_location_lat: bagLocationLat,
-    bag_location_lon: bagLocationLon,
-    preferred_unit: preferredUnit,
-    notifications_enabled: notificationsEnabled,
-    auto_save_enabled: autoSaveEnabled,
-    updated_at: updatedAt,
-  };
-}
-
 // User Settings API
 export const userSettingsAPI = {
   getSettings: async (): Promise<UserSettings> => {
     try {
       const response = await apiCallProtobuf<Uint8Array>("/user/settings");
-      return decodeUserSettingsResponse(response);
+      const resp = UserSettingsResponse.fromBinary(response);
+      return {
+        id: resp.id,
+        user_id: resp.userId,
+        bag_location_lat: resp.bagLocationLat,
+        bag_location_lon: resp.bagLocationLon,
+        preferred_unit: resp.preferredUnit,
+        notifications_enabled: resp.notificationsEnabled,
+        auto_save_enabled: resp.autoSaveEnabled,
+        updated_at: timestampToIsoString(resp.updatedAt),
+      };
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'userSettingsAPI.getSettings');
       throw error;
@@ -944,12 +579,12 @@ export const userSettingsAPI = {
         assert(settings.bagLocationLon >= -180 && settings.bagLocationLon <= 180, 'Longitude out of range');
       }
 
-      const encoded = ProtoEncoder.encodeObject({
-        bag_location_lat: settings.bagLocationLat,
-        bag_location_lon: settings.bagLocationLon,
-        preferred_unit: settings.preferredUnit,
-        notifications_enabled: settings.notificationsEnabled,
-        auto_save_enabled: settings.autoSaveEnabled,
+      const encoded = UserSettingsRequest.toBinary({
+        bagLocationLat: settings.bagLocationLat,
+        bagLocationLon: settings.bagLocationLon,
+        preferredUnit: settings.preferredUnit || "meters",
+        notificationsEnabled: settings.notificationsEnabled ?? true,
+        autoSaveEnabled: settings.autoSaveEnabled ?? true,
       });
 
       const response = await apiCallProtobuf<Uint8Array>(
@@ -957,11 +592,21 @@ export const userSettingsAPI = {
         encoded,
         "PATCH"
       );
-      return decodeUserSettingsResponse(response);
+      
+      const resp = UserSettingsResponse.fromBinary(response);
+      return {
+        id: resp.id,
+        user_id: resp.userId,
+        bag_location_lat: resp.bagLocationLat,
+        bag_location_lon: resp.bagLocationLon,
+        preferred_unit: resp.preferredUnit,
+        notifications_enabled: resp.notificationsEnabled,
+        auto_save_enabled: resp.autoSaveEnabled,
+        updated_at: timestampToIsoString(resp.updatedAt),
+      };
     } catch (error) {
       logError(error instanceof Error ? error : new Error(String(error)), 'userSettingsAPI.updateSettings');
       throw error;
     }
   },
 };
-

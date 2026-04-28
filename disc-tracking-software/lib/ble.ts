@@ -1,4 +1,5 @@
-import { decodePing, encodeHardwarePing, encodeSyncBatch, PingData, splitPingFrames } from './pb/codec';
+import { Ping, PingBatch } from './pb/hardware';
+import { splitPingFrames } from './pb/framing';
 import { getClientAuthHeaders } from './auth-headers';
 import { FirmwareConnectionError, logError } from './errors';
 
@@ -9,7 +10,7 @@ import { FirmwareConnectionError, logError } from './errors';
 
 export type PipelineStage =
   | 'BLE:CONN' | 'BLE:RX'
-  | 'DECODE:PROTO' | 'DECODE:ENV'
+  | 'DECODE:PROTO'
   | 'ENCODE:HW'
   | 'SYNC:UPLOAD'
   | 'API:REQ' | 'API:RES' | 'API:DECODE'
@@ -248,10 +249,10 @@ export interface BLEConnection {
 export class BLEManager {
   private connection: BLEConnection | null = null;
   private connectedDeviceId = '';
-  private pingBuffer: PingData[] = [];
-  private pendingBatches: PingData[][] = [];
+  private pingBuffer: Ping[] = [];
+  private pendingBatches: Ping[][] = [];
   private throwActive = false;
-  private pingListeners: Array<(ping: PingData) => void> = [];
+  private pingListeners: Array<(ping: Ping) => void> = [];
   private rssiListeners: Array<(rssi: number) => void> = [];
   private onSyncStatusCallback?: (status: 'idle' | 'success' | 'error') => void;
   private readonly BLE_CHUNK_SIZE = 20;
@@ -362,7 +363,7 @@ export class BLEManager {
     this.resetRxAssembler();
   }
 
-  onPing(callback: (ping: PingData) => void): () => void {
+  onPing(callback: (ping: Ping) => void): () => void {
     this.pingListeners.push(callback);
     return () => {
       this.pingListeners = this.pingListeners.filter(cb => cb !== callback);
@@ -516,7 +517,7 @@ export class BLEManager {
 
     if (remainder.length > 0) {
       try {
-        const probe = decodePing(remainder);
+        const probe = Ping.fromBinary(remainder);
         if (this.isLikelyCompletePing(probe)) {
           this.processPingFrame(remainder);
           this.rxFrameBuffer = [];
@@ -546,12 +547,12 @@ export class BLEManager {
   private processPingFrame(data: Uint8Array): void {
     const hexStr = Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
 
-    let ping: PingData;
+    let ping: Ping;
     try {
-      ping = decodePing(data);
+      ping = Ping.fromBinary(data);
     } catch (error) {
       pipelineLog('DECODE:PROTO', 'warn', `Dropped invalid frame (${data.length}B)`);
-      logError(error instanceof Error ? error : new Error(String(error)), 'processPingFrame.decodePing');
+      logError(error instanceof Error ? error : new Error(String(error)), 'processPingFrame.Ping.fromBinary');
       return;
     }
 
@@ -563,42 +564,40 @@ export class BLEManager {
     // Always prefer the currently connected app-level device id for
     // backend ownership checks; firmware-embedded ids may differ.
     if (this.connectedDeviceId) {
-      ping.device_id = this.connectedDeviceId;
+      ping.deviceId = this.connectedDeviceId;
     }
 
     const decodedFields: Record<string, string | number | boolean> = {
-      device_id: ping.device_id,
+      device_id: ping.deviceId,
       lat: ping.lat,
       lon: ping.lon,
       alt: ping.alt,
-      speed_mps: ping.speed_mps,
+      speed_mps: ping.speedMps,
       heading: ping.heading,
       hdop: ping.hdop,
       sats: ping.sats,
-      temp_c: ping.temp_c,
-      accel_x: ping.accel_x,
-      accel_y: ping.accel_y,
-      accel_z: ping.accel_z,
-      gyro_x: ping.gyro_x,
-      gyro_y: ping.gyro_y,
-      gyro_z: ping.gyro_z,
+      temp_c: ping.tempC,
+      accel_x: ping.accelX,
+      accel_y: ping.accelY,
+      accel_z: ping.accelZ,
+      gyro_x: ping.gyroX,
+      gyro_y: ping.gyroY,
+      gyro_z: ping.gyroZ,
       timestamp: ping.timestamp,
-      batt_pct: ping.batt_pct,
+      batt_pct: ping.battPct,
     };
 
     const gps = ping.lat !== 0 || ping.lon !== 0
       ? `GPS(${ping.lat.toFixed(6)},${ping.lon.toFixed(6)},${ping.alt.toFixed(0)}m sats=${ping.sats})`
       : 'GPS(no fix)';
-    const imu = `IMU(a=${ping.accel_x.toFixed(1)},${ping.accel_y.toFixed(1)},${ping.accel_z.toFixed(1)} g=${ping.gyro_x.toFixed(0)},${ping.gyro_y.toFixed(0)},${ping.gyro_z.toFixed(0)})`;
+    const imu = `IMU(a=${ping.accelX.toFixed(1)},${ping.accelY.toFixed(1)},${ping.accelZ.toFixed(1)} g=${ping.gyroX.toFixed(0)},${ping.gyroY.toFixed(0)},${ping.gyroZ.toFixed(0)})`;
 
     pipelineLog(
       'BLE:RX', 'info',
-      `${data.length}B ${gps} ${imu} bat=${ping.batt_pct}%`,
+      `${data.length}B ${gps} ${imu} bat=${ping.battPct}%`,
       hexStr,
       decodedFields,
     );
-
-    encodeHardwarePing(ping);
 
     if (this.throwActive) {
       this.pingBuffer.push(ping);
@@ -609,7 +608,7 @@ export class BLEManager {
     }
   }
 
-  private isLikelyCompletePing(ping: PingData): boolean {
+  private isLikelyCompletePing(ping: Ping): boolean {
     // Firmware should always set timestamp. Using it as a guard prevents
     // partial fragment decodes from propagating null/default telemetry values.
     return Number.isFinite(ping.timestamp) && ping.timestamp > 0;
@@ -632,7 +631,7 @@ export class BLEManager {
       return;
     }
 
-    const remaining: PingData[][] = [];
+    const remaining: Ping[][] = [];
     for (const batch of this.pendingBatches) {
       try {
         await this.uploadBatch(batch);
@@ -647,13 +646,18 @@ export class BLEManager {
     this.onSyncStatusCallback?.(remaining.length === 0 ? 'success' : 'error');
   }
 
-  private async uploadBatch(pings: PingData[]): Promise<void> {
-    const deviceId = this.connectedDeviceId || pings[0]?.device_id || '';
+  private async uploadBatch(pings: Ping[]): Promise<void> {
+    const deviceId = this.connectedDeviceId || pings[0]?.deviceId || '';
     const normalizedPings = pings.map((ping) => ({
       ...ping,
-      device_id: deviceId || ping.device_id,
+      deviceId: deviceId || ping.deviceId,
     }));
-    const payload = encodeSyncBatch(normalizedPings, deviceId);
+    const payload = PingBatch.toBinary({
+      pings: normalizedPings,
+      deviceId: deviceId,
+      batchTimestamp: Date.now()
+    });
+    pipelineLog('ENCODE:HW', 'info', `Encoded ${pings.length} pings → ${payload.length}B`);
     const requestBody = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer;
 
     const authHeaders = await this.getAuthHeaders();
@@ -694,7 +698,7 @@ export class BLEManager {
     return getClientAuthHeaders(headers);
   }
 
-  private loadPendingBatches(): PingData[][] {
+  private loadPendingBatches(): Ping[][] {
     if (typeof window === 'undefined') {
       return [];
     }
@@ -732,3 +736,4 @@ export class BLEManager {
 
 // Singleton instance
 export const bleManager = new BLEManager();
+

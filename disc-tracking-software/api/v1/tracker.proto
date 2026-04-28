@@ -30,6 +30,7 @@ message Ping {
   float gyro_z = 15;      // Yaw (Spin Rate)
   
   int64 timestamp = 16;
+  int32 batt_pct = 17;   // Battery percentage (0-100)
 }
 
 message SyncBatch {

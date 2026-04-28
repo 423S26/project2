@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ProtoDecoder } from '@/lib/pb/codec';
-import type { PingData } from '@/lib/pb/codec';
+import { SyncBatch } from '@/lib/pb/api';
+import { Ping } from '@/lib/pb/hardware';
+
 import { getClientAuthHeaders } from '@/lib/auth-headers';
 import { toast } from 'sonner';
 import { useDevice } from '@/contexts/DeviceContext';
@@ -19,13 +20,15 @@ import {
 
 
 interface TelemetryData {
-	device_id: string;
+	deviceId: string;
 	lat: number;
 	lon: number;
 	rpm: number;
 	wobble: number;
 	received_at: number;
-	timestamp?: number;
+	sats?: number;
+	hdop?: number;
+	battPct?: number;
 }
 
 interface ConnectionState {
@@ -57,10 +60,44 @@ function calculateRssiDistance(rssi: number): number {
         return Math.pow(10, (txPower - rssi) / (10 * factor));
 }
 
-	function hasReliableBleFix(ping: PingData | null): boolean {
-		if (!ping) return false;
-		return ping.lat !== 0 && ping.lon !== 0 && ping.sats >= 6 && ping.hdop > 0 && ping.hdop <= 2.5;
-	}
+function hasReliableBleFix(ping: Ping | null): boolean {
+	if (!ping) return false;
+	return ping.lat !== 0 && ping.lon !== 0 && ping.sats >= 5 && ping.hdop > 0 && ping.hdop <= 2.5;
+}
+
+const POLL_INTERVAL = 1000; // ms — API fallback poll rate
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
+	.replace(/\/+$/, '')
+	.replace(/\/api\/v1$/, '');
+
+// Decode a SyncBatch protobuf response (server returns repeated Ping fields).
+// Defined at module scope so it is not re-created on every render.
+function decodeTelemetryResponse(data: Uint8Array): TelemetryData[] {
+  if (!data || data.length === 0) return [];
+  try {
+    const batch = SyncBatch.fromBinary(data);
+    return batch.pings.map(ping => {
+      const rawRpm = Math.abs(ping.gyroZ) / 6;
+      const rpm = rawRpm < 5 ? 0 : rawRpm;
+      const wobble = Math.abs(ping.accelZ - 1.0);
+      return {
+        deviceId: ping.deviceId,
+        lat: ping.lat,
+        lon: ping.lon,
+        rpm,
+        wobble,
+        sats: ping.sats,
+        hdop: ping.hdop,
+        battPct: ping.battPct,
+        received_at: ping.timestamp || Date.now(),
+      };
+    });
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    pipelineLog('API:DECODE', 'warn', `Decode skipped (${data.length}B): ${err.message}`);
+    return [];
+  }
+}
 
 export default function LiveTracker({
 	deviceId,
@@ -70,7 +107,7 @@ export default function LiveTracker({
 	const { connectedDevice } = useDevice();
 	const { settings } = useSettings();
 	const [lastPing, setLastPing] = useState<TelemetryData | null>(null);
-	const [lastBlePing, setLastBlePing] = useState<PingData | null>(null);
+	const [lastBlePing, setLastBlePing] = useState<Ping | null>(null);
 	const [pipeStats, setPipeStats] = useState<PipelineStats>(getPipelineStats);
 	const [pipeLogs, setPipeLogs] = useState<PipelineLogEntry[]>(getPipelineLogs);
 	const [connectionState, setConnectionState] = useState<ConnectionState>({
@@ -104,15 +141,23 @@ export default function LiveTracker({
         }, []);
 
         // Track user device orientation
+        const hasAbsoluteOrientationRef = useRef(false);
         useEffect(() => {
                 const handleOrientation = (event: DeviceOrientationEvent | Event | unknown) => {
                         const ev = event as Record<string, unknown>;
-                        let heading = null;
+                        // Prefer absolute compass heading. Once we have it, ignore relative events.
+                        const isAbsolute = ev.absolute === true || typeof ev.webkitCompassHeading === 'number';
+                        if (!isAbsolute && hasAbsoluteOrientationRef.current) return;
+
+                        let heading: number | null = null;
                         if (typeof ev.webkitCompassHeading === "number") {
+                                // iOS: true compass heading, clockwise from north
                                 heading = ev.webkitCompassHeading;
+                                hasAbsoluteOrientationRef.current = true;
                         } else if (typeof ev.alpha === "number" && ev.alpha !== null) {
-                                // Approximate heading (absolute)
-                                heading = 360 - ev.alpha;
+                                // deviceorientationabsolute alpha is CCW from north → convert to CW
+                                heading = (360 - (ev.alpha as number) + 360) % 360;
+                                if (isAbsolute) hasAbsoluteOrientationRef.current = true;
                         }
                         if (heading !== null) {
                                 setUserHeading(heading);
@@ -142,19 +187,22 @@ export default function LiveTracker({
 	// debug console.  All values are decoded directly from the firmware
 	// binary on the wire; nothing here comes from the API.
 	useEffect(() => {
-		const unsubscribe = bleManager.onPing((ping: PingData) => {
+		const unsubscribe = bleManager.onPing((ping: Ping) => {
 			bleLastPingRef.current = Date.now();
 			setLastBlePing(ping);
 			// Derived metrics (computed client-side from raw BLE fields)
-			const rpm = rpmFromGyroZ(ping.gyro_z);
-			const wobble = Math.abs(ping.accel_z - 1.0);
+			const rpm = rpmFromGyroZ(ping.gyroZ);
+			const wobble = Math.abs(ping.accelZ - 1.0);
 			const telemetry: TelemetryData = {
-				device_id: ping.device_id,
+				deviceId: ping.deviceId,
 				lat: ping.lat,
 				lon: ping.lon,
 				rpm,
 				wobble,
 				received_at: ping.timestamp,
+				sats: ping.sats,
+				hdop: ping.hdop,
+				battPct: ping.battPct,
 			};
 			setLastPing(telemetry);
 			onTelemetryAction?.(telemetry);
@@ -175,10 +223,6 @@ export default function LiveTracker({
 		};
 	}, [onTelemetryAction]);
 
-	const POLL_INTERVAL = 1000; // Poll every 1 second
-	const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
-		.replace(/\/+$/, '')
-		.replace(/\/api\/v1$/, '');
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 	const lastToastRef = useRef<{ message: string; at: number }>({ message: '', at: 0 });
 	const hasShownConnectedToastRef = useRef(false);
@@ -205,7 +249,7 @@ export default function LiveTracker({
 	}, []);
 
 	const fetchTelemetry = useCallback(async () => {
-		const telemetryDeviceId = deviceId || lastBlePing?.device_id || connectedDevice?.deviceId;
+		const telemetryDeviceId = deviceId || lastBlePing?.deviceId || connectedDevice?.deviceId;
 		if (!telemetryDeviceId) return;
 
 		if (Date.now() < apiForbiddenUntilRef.current) {
@@ -220,7 +264,7 @@ export default function LiveTracker({
 
 		try {
 			const headers = await getAuthHeaders();
-			const url = `${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(telemetryDeviceId)}`;
+			const url = `${API_BASE_URL}/api/v1/telemetry?deviceId=${encodeURIComponent(telemetryDeviceId)}`;
 			const response = await fetch(url, {
 				headers,
 			});
@@ -233,7 +277,7 @@ export default function LiveTracker({
 						pipelineLog(
 							'GIN:HTTP',
 							'warn',
-							`403 Forbidden for telemetry device_id=${telemetryDeviceId}. Backing off polling for 60s.`
+							`403 Forbidden for telemetry deviceId=${telemetryDeviceId}. Backing off polling for 60s.`
 						);
 					}
 					return;
@@ -263,12 +307,15 @@ export default function LiveTracker({
 				// Use the most recent telemetry update (API fallback only)
 				const latestUpdate = telemetryUpdates[telemetryUpdates.length - 1];
 				const telemetryData: TelemetryData = {
-					device_id: latestUpdate.device_id,
+					deviceId: latestUpdate.deviceId,
 					lat: latestUpdate.lat,
 					lon: latestUpdate.lon,
 					rpm: latestUpdate.rpm,
 					wobble: latestUpdate.wobble,
-					received_at: latestUpdate.timestamp ?? Date.now(),
+					received_at: latestUpdate.received_at,
+					sats: latestUpdate.sats,
+					hdop: latestUpdate.hdop,
+					battPct: latestUpdate.battPct,
 				};
 
 				setLastPing(telemetryData);
@@ -301,133 +348,7 @@ export default function LiveTracker({
 				lastError: err.message,
 			}));
 		}
-	}, [connectedDevice?.deviceId, deviceId, lastBlePing?.device_id, onTelemetryAction, getAuthHeaders, API_BASE_URL]);
-
-const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
-		if (!data || data.length === 0) return [];
-
-		const skipUnknownField = (decoder: ProtoDecoder, wireType: number): boolean => {
-			try {
-				if (wireType === 0) {
-					decoder.decodeVarint();
-					return true;
-				}
-				if (wireType === 1) {
-					decoder.readBytes(8);
-					return true;
-				}
-				if (wireType === 5) {
-					decoder.readBytes(4);
-					return true;
-				}
-				if (wireType === 2) {
-					const skipLen = decoder.decodeVarint();
-					if (skipLen < 0) return false;
-					decoder.readBytes(skipLen);
-					return true;
-				}
-				return false;
-			} catch {
-				return false;
-			}
-		};
-
-		try {
-			const decoder = new ProtoDecoder(data);
-			const telemetryUpdates: TelemetryData[] = [];
-
-			while (decoder.getOffset() < data.length) {
-				let tag: number;
-				try {
-					tag = decoder.decodeVarint();
-				} catch {
-					break;
-				}
-
-				const wireType = tag & 0x07;
-				const fieldNumber = tag >>> 3;
-
-				if (fieldNumber !== 1 || wireType !== 2) {
-					if (!skipUnknownField(decoder, wireType)) {
-						break;
-					}
-					continue;
-				}
-
-				let entryLength: number;
-				try {
-					entryLength = decoder.decodeVarint();
-				} catch {
-					break;
-				}
-
-				if (entryLength < 0) {
-					break;
-				}
-
-				const remaining = data.length - decoder.getOffset();
-				if (entryLength > remaining) {
-					pipelineLog('API:DECODE', 'warn', `Truncated telemetry entry dropped (${entryLength}B requested, ${remaining}B remaining)`);
-					break;
-				}
-
-				let entryBytes: Uint8Array;
-				try {
-					entryBytes = decoder.readBytes(entryLength);
-				} catch {
-					break;
-				}
-
-				const entryDecoder = new ProtoDecoder(entryBytes);
-				let deviceId = '';
-				let lat = 0;
-				let lon = 0;
-				let rpm = 0;
-				let wobble = 0;
-				let timestamp = 0;
-
-				while (entryDecoder.getOffset() < entryBytes.length) {
-					let innerTag: number;
-					try {
-						innerTag = entryDecoder.decodeVarint();
-					} catch {
-						break;
-					}
-
-					const innerWireType = innerTag & 0x07;
-					const innerFieldNumber = innerTag >>> 3;
-
-					try {
-						if (innerFieldNumber === 1 && innerWireType === 2) deviceId = entryDecoder.decodeString();
-						else if (innerFieldNumber === 2 && innerWireType === 1) lat = entryDecoder.decodeDouble();
-						else if (innerFieldNumber === 3 && innerWireType === 1) lon = entryDecoder.decodeDouble();
-						else if (innerFieldNumber === 4 && innerWireType === 1) entryDecoder.decodeDouble();
-						else if (innerFieldNumber === 5 && innerWireType === 1) rpm = entryDecoder.decodeDouble();
-						else if (innerFieldNumber === 6 && innerWireType === 1) wobble = entryDecoder.decodeDouble();
-						else if (innerFieldNumber === 7 && innerWireType === 0) timestamp = entryDecoder.decodeVarint();
-						else if (!skipUnknownField(entryDecoder, innerWireType)) break;
-					} catch {
-						break;
-					}
-				}
-
-				telemetryUpdates.push({
-					device_id: deviceId,
-					lat,
-					lon,
-					rpm,
-					wobble,
-					received_at: timestamp,
-				});
-			}
-
-			return telemetryUpdates;
-		} catch (error) {
-			const err = error instanceof Error ? error : new Error(String(error));
-			pipelineLog('API:DECODE', 'warn', `Decode skipped (${data.length}B): ${err.message}`);
-			return [];
-		}
-	};
+	}, [connectedDevice?.deviceId, deviceId, lastBlePing?.deviceId, onTelemetryAction, getAuthHeaders]);
 
 	useEffect(() => {
 		if (!connectedDevice?.deviceId || !activeSessionId) {
@@ -482,7 +403,13 @@ const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
 	const activePing = lastBlePing || lastPing;
 	const canUseGpsDistance = lastBlePing
 		? hasReliableBleFix(lastBlePing)
-		: Boolean(activePing && activePing.lat !== 0 && activePing.lon !== 0);
+		: Boolean(
+			activePing &&
+			activePing.lat !== 0 &&
+			activePing.lon !== 0 &&
+			(activePing.sats == null || activePing.sats >= 5) &&
+			(activePing.hdop == null || (activePing.hdop > 0 && activePing.hdop <= 2.5))
+		);
 	if (userLocation && activePing && canUseGpsDistance) {
 		const R = 6371e3; // Earth radius in meters
 		const lat1 = (userLocation.lat * Math.PI) / 180;
@@ -503,7 +430,7 @@ const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
 		const brng = Math.atan2(y, x);
 		bearingToDisc = ((brng * 180) / Math.PI + 360) % 360;
 		if (userHeading !== null) {
-			relativeBearing = bearingToDisc - userHeading;
+			relativeBearing = ((bearingToDisc - userHeading) + 360) % 360;
 		}
 	}
 
@@ -569,10 +496,10 @@ const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
 								<>
 								{/* ── Computed Metrics (from raw BLE fields) ── */}
 								<div className="grid grid-cols-4 gap-x-4 gap-y-0.5 pb-1.5 border-b border-slate-700/30">
-									<div>dev: <span className="text-cyan-300">{lastBlePing.device_id}</span></div>
-									<div>rpm: <span className={`${rpmFromGyroZ(lastBlePing.gyro_z) > 0 ? 'text-yellow-300' : 'text-gray-500'}`}>{rpmFromGyroZ(lastBlePing.gyro_z).toFixed(0)}</span></div>
-									<div>wobble: <span className={`${Math.abs(lastBlePing.accel_z - 1.0) > 0.1 ? 'text-orange-300' : 'text-gray-500'}`}>{Math.abs(lastBlePing.accel_z - 1.0).toFixed(3)}g</span></div>
-									<div>bat: <span className="text-emerald-300">{lastBlePing.batt_pct}%</span></div>
+									<div>dev: <span className="text-cyan-300">{lastBlePing.deviceId}</span></div>
+									<div>rpm: <span className={`${rpmFromGyroZ(lastBlePing.gyroZ) > 0 ? 'text-yellow-300' : 'text-gray-500'}`}>{rpmFromGyroZ(lastBlePing.gyroZ).toFixed(0)}</span></div>
+									<div>wobble: <span className={`${Math.abs(lastBlePing.accelZ - 1.0) > 0.1 ? 'text-orange-300' : 'text-gray-500'}`}>{Math.abs(lastBlePing.accelZ - 1.0).toFixed(3)}g</span></div>
+									<div>bat: <span className="text-emerald-300">{lastBlePing.battPct}%</span></div>
 								</div>
 
 								{/* ── GPS Data (from raw BLE fields) ── */}
@@ -597,7 +524,7 @@ const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
 										<div>lat: <span className="text-green-300">{lastBlePing.lat.toFixed(6)}</span></div>
 										<div>lon: <span className="text-green-300">{lastBlePing.lon.toFixed(6)}</span></div>
 										<div>alt: <span className="text-green-300">{lastBlePing.alt.toFixed(1)}m</span></div>
-										<div>speed: <span className="text-green-300">{lastBlePing.speed_mps.toFixed(1)}m/s</span></div>
+										<div>speed: <span className="text-green-300">{lastBlePing.speedMps.toFixed(1)}m/s</span></div>
 										<div>heading: <span className="text-green-300">{lastBlePing.heading.toFixed(0)}&deg;</span></div>
 										<div>sats: <span className={`${lastBlePing.sats >= 5 ? 'text-blue-300' : 'text-red-400'}`}>{lastBlePing.sats}</span></div>
 										<div>hdop: <span className={`${lastBlePing.hdop <= 2 ? 'text-blue-300' : lastBlePing.hdop <= 4 ? 'text-yellow-300' : 'text-red-400'}`}>{lastBlePing.hdop.toFixed(2)}</span></div>
@@ -609,16 +536,16 @@ const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
 								<div>
 									<div className="text-[10px] text-yellow-500/70 mb-0.5">IMU (LSM6DS3)</div>
 									<div className="grid grid-cols-3 gap-x-4 gap-y-0.5">
-										<div>aX: <span className="text-yellow-300">{lastBlePing.accel_x.toFixed(3)}g</span></div>
-										<div>aY: <span className="text-yellow-300">{lastBlePing.accel_y.toFixed(3)}g</span></div>
-										<div>aZ: <span className="text-yellow-300">{lastBlePing.accel_z.toFixed(3)}g</span></div>
-										<div>gX: <span className="text-orange-300">{lastBlePing.gyro_x.toFixed(1)}&deg;/s</span></div>
-										<div>gY: <span className="text-orange-300">{lastBlePing.gyro_y.toFixed(1)}&deg;/s</span></div>
-										<div>gZ: <span className="text-orange-300">{lastBlePing.gyro_z.toFixed(1)}&deg;/s</span></div>
-										<div>temp: <span className="text-red-300">{lastBlePing.temp_c.toFixed(1)}&deg;C</span></div>
+										<div>aX: <span className="text-yellow-300">{lastBlePing.accelX.toFixed(3)}g</span></div>
+										<div>aY: <span className="text-yellow-300">{lastBlePing.accelY.toFixed(3)}g</span></div>
+										<div>aZ: <span className="text-yellow-300">{lastBlePing.accelZ.toFixed(3)}g</span></div>
+										<div>gX: <span className="text-orange-300">{lastBlePing.gyroX.toFixed(1)}&deg;/s</span></div>
+										<div>gY: <span className="text-orange-300">{lastBlePing.gyroY.toFixed(1)}&deg;/s</span></div>
+										<div>gZ: <span className="text-orange-300">{lastBlePing.gyroZ.toFixed(1)}&deg;/s</span></div>
+										<div>temp: <span className="text-red-300">{lastBlePing.tempC.toFixed(1)}&deg;C</span></div>
 										<div className="col-span-2 text-[10px] text-gray-600">
-											|a|={Math.sqrt(lastBlePing.accel_x**2 + lastBlePing.accel_y**2 + lastBlePing.accel_z**2).toFixed(3)}g
-											{' '}|g|={Math.sqrt(lastBlePing.gyro_x**2 + lastBlePing.gyro_y**2 + lastBlePing.gyro_z**2).toFixed(1)}&deg;/s
+											|a|={Math.sqrt(lastBlePing.accelX**2 + lastBlePing.accelY**2 + lastBlePing.accelZ**2).toFixed(3)}g
+											{' '}|g|={Math.sqrt(lastBlePing.gyroX**2 + lastBlePing.gyroY**2 + lastBlePing.gyroZ**2).toFixed(1)}&deg;/s
 										</div>
 									</div>
 								</div>
@@ -627,7 +554,7 @@ const decodeTelemetryResponse = (data: Uint8Array): TelemetryData[] => {
 								<>
 								{/* ── API fallback (no BLE connection) ── */}
 								<div className="grid grid-cols-4 gap-x-4 gap-y-0.5 pb-1.5 border-b border-slate-700/30">
-									<div>dev: <span className="text-cyan-300">{lastPing.device_id}</span></div>
+									<div>dev: <span className="text-cyan-300">{lastPing.deviceId}</span></div>
 									<div>rpm: <span className={`${lastPing.rpm > 0 ? 'text-yellow-300' : 'text-gray-500'}`}>{lastPing.rpm.toFixed(0)}</span></div>
 									<div>wobble: <span className={`${lastPing.wobble > 0.1 ? 'text-orange-300' : 'text-gray-500'}`}>{lastPing.wobble.toFixed(3)}g</span></div>
 								</div>

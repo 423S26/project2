@@ -1,6 +1,4 @@
 //NOTE: UNIT TESTS ARE IN A SEPARATE FILE (main_test.go) TO AVOID IMPORT CYCLES WITH THE PROTOBUF STRUCTS
-//NOTE: ASSERTS WILL BE IMPLEMENTED INLINE
-//NOTE: Telemetry ingestion uses batched HTTP POST uploads
 
 package handler
 
@@ -65,26 +63,6 @@ func normalizeDatabaseURL(raw string) string {
 
 //------------------------------------------
 
-type DiscState int
-
-const (
-	StateIdle DiscState = iota
-	StateInFlight
-	StateImpacted
-)
-
-type ThrowSession struct {
-	StartTime time.Time
-	StartPos  *pb.Ping
-	EndPos    *pb.Ping
-	MaxRPM    float64
-	IsActive  bool
-}
-
-var (
-	activeSessions = make(map[string]*ThrowSession)
-)
-
 type AuthClaims struct {
 	Sub    string `json:"sub"`
 	UserID string `json:"user_id"`
@@ -96,52 +74,21 @@ type AuthClaims struct {
 
 //------------------------------------------
 
-func ValidatePing(p *pb.Ping) bool {
-	// HDOP < 2.0 is excellent, > 5.0 is junk.
-	// We ignore anything above 4.0 to prevent "jitter"
-	if p == nil || p.Hdop > 4.0 || p.Sats < 5 {
-		return false
+// ProcessSpatialData calculates the 3D distance between the observer device
+// (phone/laptop running the app) and the disc using the Haversine formula for
+// the surface component and a simple vertical delta for the Z axis.
+// phoneLat/phoneLon: GPS coords of the device running the app.
+// discLat/discLon:   GPS coords from the tracking hardware protobuf (Ping.Lat/Lon).
+// discAlt:           Altitude from the Ping in metres.
+// referenceAlt:      Altitude of the observer/tee in metres.
+func ProcessSpatialData(phoneLat, phoneLon, discLat, discLon, discAlt, referenceAlt float64) (distanceMeters float64, verticalDelta float64) {
+	if discLat == 0 && discLon == 0 {
+		return 0, 0
 	}
-	return true
-}
-
-func ProcessSpatialData(db *sql.DB, p *pb.Ping, teeLat, teeLon, teeAlt float64) (float64, bool) {
-
-	// Using PostGIS for the surface distance and manual math for the Z-axis
-	var surfaceDist float64
-	query := `SELECT ST_DistanceSphere(
-		ST_MakePoint($1, $2), 
-		ST_MakePoint($3, $4)
-	)`
-	if p.Lon == 0 && p.Lat == 0 {
-		return 0, false
-	}
-	db.QueryRow(query, teeLon, teeLat, p.Lon, p.Lat).Scan(&surfaceDist)
-
-	verticalDist := p.Alt - teeAlt
-	totalDist := math.Sqrt(math.Pow(surfaceDist, 2) + math.Pow(verticalDist, 2))
-
-	// OB (Out of Bounds) Check via Geofencing
-	var isOB bool
-	obQuery := `SELECT EXISTS (
-		SELECT 1 FROM course_obstacles 
-		WHERE ST_Intersects(boundary, ST_SetSRID(ST_MakePoint($1, $2), 4326))
-	)`
-	db.QueryRow(obQuery, p.Lon, p.Lat).Scan(&isOB)
-
-	return totalDist, isOB
-}
-
-func CalculateExitVelocity(p1, p2 *pb.Ping) float64 {
-	timeDelta := float64(p2.Timestamp-p1.Timestamp) / 1000.0 // seconds
-	if timeDelta <= 0 {
-		return 0
-	}
-
-	// Distance between two points
-	dist := Haversine(p1.GetLat(), p1.GetLon(), p2.GetLat(), p2.GetLon())
-
-	return dist / timeDelta
+	surfaceDist := Haversine(phoneLat, phoneLon, discLat, discLon)
+	verticalDelta = discAlt - referenceAlt
+	distanceMeters = math.Sqrt(math.Pow(surfaceDist, 2) + math.Pow(verticalDelta, 2))
+	return distanceMeters, verticalDelta
 }
 
 // Haversine calculates the great-circle distance between two points on the Earth.
@@ -161,18 +108,49 @@ func Haversine(lat1, lon1, lat2, lon2 float64) float64 {
 	return R * c
 }
 
-// CalculateRPM derives RPM from gyroscope Z-axis angular velocity (deg/s).
-// The gyro Z-axis measures spin rate around the disc's vertical axis.
-// At rest gyro_z â‰ˆ 0 so RPM â‰ˆ 0 â€” unlike the old centripetal-accel formula
-// which falsely read ~170 RPM from gravity leaking into accel X/Y.
 func CalculateRPM(gyroZDegPerSec float64) float64 {
 	// 1 RPM = 6 deg/s  (360 deg / 60 s)
 	rpm := math.Abs(gyroZDegPerSec) / 6.0
-	// Suppress sensor noise â€” anything below ~5 RPM (30 deg/s) is drift
+
 	if rpm < 5 {
 		return 0
 	}
 	return rpm
+}
+
+// IMUState is the interpreted output from a single LSM6DS3 reading.
+// All accel fields are in G, all gyro fields are in deg/s.
+type IMUState struct {
+	RPM        float64 // spin rate derived from gyro_z (|gyro_z| / 6)
+	Wobble     float64 // deviation of accel_z from 1G — proxy for disc wobble
+	IsSpinning bool    // true when RPM > 5
+	TotalAccel float64 // magnitude of the full acceleration vector (G)
+	TotalGyro  float64 // magnitude of the full angular-rate vector (deg/s)
+	HyzerAngle float64 // disc tilt left/right: atan2(accel_y, accel_z) in degrees
+	NoseAngle  float64 // nose up/down:          atan2(accel_x, accel_z) in degrees
+}
+
+// InterpretIMU converts the raw IMU fields from a hardware.proto Ping into
+// human-readable flight metrics. It does not touch GPS or battery fields.
+func InterpretIMU(ping *pb.Ping) IMUState {
+	ax := float64(ping.GetAccelX())
+	ay := float64(ping.GetAccelY())
+	az := float64(ping.GetAccelZ())
+	gx := float64(ping.GetGyroX())
+	gy := float64(ping.GetGyroY())
+	gz := float64(ping.GetGyroZ())
+
+	rpm := CalculateRPM(gz)
+
+	return IMUState{
+		RPM:        rpm,
+		Wobble:     math.Abs(az - 1.0),
+		IsSpinning: rpm > 5,
+		TotalAccel: math.Sqrt(ax*ax + ay*ay + az*az),
+		TotalGyro:  math.Sqrt(gx*gx + gy*gy + gz*gz),
+		HyzerAngle: math.Atan2(ay, az) * (180.0 / math.Pi),
+		NoseAngle:  math.Atan2(ax, az) * (180.0 / math.Pi),
+	}
 }
 
 func parseAndVerifyBearerToken(authHeader string, jwtSecret string) (*AuthClaims, error) {
@@ -230,111 +208,23 @@ func extractUserIDFromClaims(claims *AuthClaims) string {
 	return claims.Sub
 }
 
-func verifyDeviceOwnership(db *sql.DB, userID, deviceID string) (bool, error) {
-	var owned bool
-	err := db.QueryRow(`
-		SELECT EXISTS (
-			SELECT 1
-			FROM user_devices
-			WHERE user_id = $1
-			  AND lower(trim(hardware_device_id)) = lower(trim($2))
-		)
-	`, userID, deviceID).Scan(&owned)
-	if err != nil {
-		return false, err
-	}
-	return owned, nil
-}
-
-func calculateTelemetrySummary(pings []*pb.Ping) (float64, float64, float64) {
-	if len(pings) == 0 {
-		return 0, 0, 0
-	}
-
-	var totalDistanceMeters float64
-	var maxRPM float64
-	for i, ping := range pings {
-		rpm := CalculateRPM(float64(ping.GetGyroZ()))
-		if rpm > maxRPM {
-			maxRPM = rpm
-		}
-
-		if i == 0 {
-			continue
-		}
-
-		prev := pings[i-1]
-		totalDistanceMeters += Haversine(
-			prev.GetLat(),
-			prev.GetLon(),
-			ping.GetLat(),
-			ping.GetLon(),
-		)
-	}
-
-	first := pings[0]
-	last := pings[len(pings)-1]
-	horizontalMeters := Haversine(first.GetLat(), first.GetLon(), last.GetLat(), last.GetLon())
-	verticalMeters := last.GetAlt() - first.GetAlt()
-	releaseAngle := 0.0
-	if horizontalMeters > 0 {
-		releaseAngle = math.Atan2(verticalMeters, horizontalMeters) * (180.0 / math.Pi)
-	}
-
-	const metersToFeet = 3.28084
-	return totalDistanceMeters * metersToFeet, releaseAngle, maxRPM
-}
-
-func decodeTelemetryPings(body []byte) ([]*pb.Ping, string, error) {
+// decodeTelemetryPings unmarshals a SyncBatch protobuf from the wire.
+// The frontend BLE layer always batches pings into a SyncBatch before upload.
+func decodeTelemetryPings(body []byte) ([]*pb.Ping, error) {
 	if len(body) == 0 {
-		return nil, "", errors.New("empty telemetry payload")
+		return nil, errors.New("empty telemetry payload")
 	}
 
 	var syncBatch pb.SyncBatch
-	if err := proto.Unmarshal(body, &syncBatch); err == nil && len(syncBatch.GetPings()) > 0 {
-		return syncBatch.GetPings(), "sync_batch", nil
+	if err := proto.Unmarshal(body, &syncBatch); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal SyncBatch: %w", err)
 	}
 
-	var pingBatch pb.PingBatch
-	if err := proto.Unmarshal(body, &pingBatch); err == nil && len(pingBatch.GetPings()) > 0 {
-		batchDeviceID := strings.TrimSpace(pingBatch.GetDeviceId())
-		if batchDeviceID != "" {
-			for _, ping := range pingBatch.GetPings() {
-				if strings.TrimSpace(ping.GetDeviceId()) == "" {
-					ping.DeviceId = batchDeviceID
-				}
-			}
-		}
-		return pingBatch.GetPings(), "ping_batch", nil
+	if len(syncBatch.GetPings()) == 0 {
+		return nil, errors.New("SyncBatch contains no pings")
 	}
 
-	var clientMessage pb.ClientMessage
-	if err := proto.Unmarshal(body, &clientMessage); err == nil {
-		if ping := clientMessage.GetPing(); ping != nil {
-			return []*pb.Ping{ping}, "client_message_ping", nil
-		}
-
-		if batch := clientMessage.GetBatch(); batch != nil && len(batch.GetPings()) > 0 {
-			batchDeviceID := strings.TrimSpace(batch.GetDeviceId())
-			if batchDeviceID != "" {
-				for _, ping := range batch.GetPings() {
-					if strings.TrimSpace(ping.GetDeviceId()) == "" {
-						ping.DeviceId = batchDeviceID
-					}
-				}
-			}
-			return batch.GetPings(), "client_message_batch", nil
-		}
-	}
-
-	var singlePing pb.Ping
-	if err := proto.Unmarshal(body, &singlePing); err == nil {
-		if strings.TrimSpace(singlePing.GetDeviceId()) != "" || singlePing.GetTimestamp() > 0 {
-			return []*pb.Ping{&singlePing}, "single_ping", nil
-		}
-	}
-
-	return nil, "", errors.New("unsupported telemetry protobuf payload")
+	return syncBatch.GetPings(), nil
 }
 
 func normalizePingsDeviceID(pings []*pb.Ping) (string, error) {
@@ -388,14 +278,9 @@ func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		pings, payloadShape, err := decodeTelemetryPings(body)
+		pings, err := decodeTelemetryPings(body)
 		if err != nil {
 			handlers.SendProtobufError(c, http.StatusBadRequest, "failed to decode telemetry payload")
-			return
-		}
-
-		if len(pings) == 0 {
-			handlers.SendProtobufError(c, http.StatusBadRequest, "batch contains no pings")
 			return
 		}
 
@@ -405,12 +290,7 @@ func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Ownership gating intentionally disabled for telemetry ingestion.
-		// Device registration is handled at pairing/account-link time.
-
-		// Migration compatibility metric: records the protobuf payload shape
-		// used by firmware uploads as clients transition stream formats.
-		log.Printf("[ProcessTelemetry] decoded payload shape=%s user=%s device=%s pings=%d", payloadShape, userID, deviceID, len(pings))
+		log.Printf("[ProcessTelemetry] user=%s device=%s pings=%d", userID, deviceID, len(pings))
 
 		// Process each ping in the batch
 		processedPings := 0
@@ -429,26 +309,28 @@ func ProcessTelemetry(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// Process a single ping and store telemetry data
 func processSinglePing(db *sql.DB, userID string, ping *pb.Ping) error {
-	// Validate ping data
-	if !ValidatePing(ping) {
-		return nil // Skip invalid pings silently
-	}
-	if ping.Lat == 0 && ping.Lon == 0 {
+	// Require a device ID; everything else (including GPS fix) is optional.
+	if ping == nil || strings.TrimSpace(ping.GetDeviceId()) == "" {
 		return nil
 	}
 
 	// Calculate RPM from gyroscope Z-axis (spin rate in deg/s)
 	rpm := CalculateRPM(float64(ping.GyroZ))
 
-	hdop := ping.Hdop
-
-	// Wobble = deviation of accel_z from 1G (gravity). A perfectly flat
-	// disc at rest reads ~1.0g on Z; tilt/wobble pushes that away from 1.0.
 	wobble := math.Abs(float64(ping.AccelZ) - 1.0)
 
-	// Persist raw telemetry samples for API fallback polling.
+	hasGpsFix := ping.GetLat() != 0 || ping.GetLon() != 0
+	var lat, lon, alt sql.NullFloat64
+	if hasGpsFix {
+		lat = sql.NullFloat64{Float64: ping.GetLat(), Valid: true}
+		lon = sql.NullFloat64{Float64: ping.GetLon(), Valid: true}
+		alt = sql.NullFloat64{Float64: ping.GetAlt(), Valid: true}
+	}
+
+	// Firmware sets Timestamp = millis() (milliseconds since boot), not a
+	// Unix timestamp.  Use the server receive time for the DB row so that
+	// timestamps are always in a meaningful absolute time domain.
 	_, err := db.Exec(`
 		INSERT INTO telemetry (
 			device_id,
@@ -471,10 +353,10 @@ func processSinglePing(db *sql.DB, userID string, ping *pb.Ping) error {
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 		)`,
 		ping.GetDeviceId(), userID,
-		time.Unix(ping.Timestamp/1000, 0),
-		ping.GetLat(), ping.GetLon(), ping.GetAlt(),
+		time.Now(),
+		lat, lon, alt,
 		ping.GetAccelX(), ping.GetAccelY(), ping.GetAccelZ(),
-		rpm, hdop, ping.GetSats(), ping.GetSpeedMps(), ping.GetBattPct(), wobble,
+		rpm, ping.GetHdop(), ping.GetSats(), ping.GetSpeedMps(), ping.GetBattPct(), wobble,
 	)
 
 	return err
@@ -498,7 +380,8 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 		// Ownership gating intentionally disabled for telemetry fetch.
 		// Device registration is handled at pairing/account-link time.
 
-		// Get recent telemetry data (last 100 points)
+		// Get recent telemetry data (last 100 points), returning all fields
+		// so the frontend can display GPS quality (hdop/sats), battery, etc.
 		rows, err := db.Query(`
 			SELECT
 				device_id,
@@ -507,6 +390,13 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 				altitude,
 				COALESCE(rpm, 0),
 				COALESCE(frequency_noise, 0),
+				COALESCE(hdop, 0),
+				COALESCE(sats, 0),
+				COALESCE(speed, 0),
+				COALESCE(battery_level, 0),
+				COALESCE(accel_x, 0),
+				COALESCE(accel_y, 0),
+				COALESCE(accel_z, 0),
 				timestamp
 			FROM telemetry
 			WHERE user_id = $1 AND device_id = $2
@@ -520,34 +410,43 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 		}
 		defer rows.Close()
 
-		var telemetry []*pb.TelemetryUpdate
+		var pings []*pb.Ping
 		for rows.Next() {
-			var deviceId string
-			var alt sql.NullFloat64
-			var lat sql.NullFloat64
-			var lon sql.NullFloat64
-			var rpm, wobble float64
+			var rowDeviceId string
+			var lat, lon, alt sql.NullFloat64
+			var rpm, wobble, hdop, speed, accelX, accelY, accelZ float64
+			var sats, battPct int
 			var timestamp time.Time
 
-			err := rows.Scan(&deviceId, &lat, &lon, &alt, &rpm, &wobble, &timestamp)
+			err := rows.Scan(
+				&rowDeviceId, &lat, &lon, &alt,
+				&rpm, &wobble, &hdop, &sats, &speed, &battPct,
+				&accelX, &accelY, &accelZ,
+				&timestamp,
+			)
 			if err != nil {
 				log.Printf("[GetTelemetry] Row scan error: %v", err)
 				continue
 			}
 
-			update := &pb.TelemetryUpdate{
-				DeviceId:  deviceId,
-				Lat:       lat.Float64,
-				Lon:       lon.Float64,
-				Rpm:       rpm,
-				Wobble:    wobble,
-				Timestamp: timestamp.Unix() * 1000, // Convert to milliseconds
+			ping := &pb.Ping{
+				DeviceId: rowDeviceId,
+				Lat:      lat.Float64,
+				Lon:      lon.Float64,
+				Alt:      alt.Float64,
+				SpeedMps: float32(speed),
+				Hdop:     float32(hdop),
+				Sats:     int32(sats),
+				AccelX:   float32(accelX),
+				AccelY:   float32(accelY),
+				AccelZ:   float32(accelZ),
+				BattPct:  int32(battPct),
+				// Reconstruct gyro_z from stored rpm so the frontend derives
+				// the same rpm value: |gyro_z| / 6 = rpm  ⟹  gyro_z = rpm * 6.
+				GyroZ:     float32(rpm * 6.0),
+				Timestamp: timestamp.UnixMilli(),
 			}
-			if alt.Valid {
-				altValue := alt.Float64
-				update.Alt = &altValue
-			}
-			telemetry = append(telemetry, update)
+			pings = append(pings, ping)
 		}
 
 		if err := rows.Err(); err != nil {
@@ -556,10 +455,9 @@ func GetTelemetry(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		resp := &pb.GetTelemetryResponse{
-			Telemetry: telemetry,
-		}
-
+		// Return as SyncBatch (repeated Ping) so the frontend receives the
+		// full hardware.proto Ping message including hdop, sats, and batt_pct.
+		resp := &pb.SyncBatch{Pings: pings}
 		handlers.SendProtobufResponse(c, http.StatusOK, resp)
 	}
 }
@@ -702,8 +600,3 @@ func init() {
 func Handler(w http.ResponseWriter, r *http.Request) {
 	GlobalRouter.ServeHTTP(w, r)
 }
-
-// CONSTANT: The distance from the center of the disc to IMU chip.
-// FOR REFERENCE: If the chip is 10mm from the center, this is shown as 0.01
-
-const SensorRadiusMeters = 0.008 // Example: 8mm
