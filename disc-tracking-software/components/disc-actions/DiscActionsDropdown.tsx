@@ -317,33 +317,29 @@ export default function DiscActionsDropdown({
     bleManager.disconnect();
 
     try {
-      const ensureResponse = await fetch('/api/go/ensure-running', {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (!ensureResponse.ok) {
-        let message = 'Unable to start backend service automatically.';
-        try {
-          const payload = await ensureResponse.json();
-          if (payload?.error) {
-            message = String(payload.error);
-          }
-        } catch {
-          // Keep default message when response is not JSON.
-        }
-        throw new Error(message);
-      }
-
-      // Connect to hardware using Web Bluetooth
+      // 1) Web Bluetooth FIRST — must be called inside the click handler's
+      //    transient-activation window. Awaiting any HTTP request before this
+      //    makes Chrome treat the chooser as non-user-initiated, which on
+      //    Windows opens a stale GATT link that gets idle-killed (reason 0x15).
       await bleManager.connect(selectedDisc.connectionNumber || selectedDisc.id);
-      
-      // Track active hardware device in shared context
+
+      // 2) Track active hardware device in shared context.
       connectDevice(selectedDisc.connectionNumber || selectedDisc.id, selectedDisc.name);
 
       setSyncStatus('success');
       setTrackerDistance(0); // Will be updated from live BLE telemetry pings
       closeDropdown();
       toast.success(`Connected to ${selectedDisc.name}. Telemetry batching is active.`);
+
+      // 3) Kick the local Go backend awake in the background. The BLE link
+      //    is already active; uploads will retry once the backend is up, so
+      //    a failure here must NOT tear down the connection.
+      void fetch('/api/go/ensure-running', {
+        method: 'POST',
+        credentials: 'include',
+      }).catch(() => {
+        /* swallowed — uploads will surface their own errors */
+      });
     } catch (error) {
       setSyncStatus('error');
       toast.error(getErrorMessage(error, 'Unable to connect to device. Check Bluetooth and try again.'));

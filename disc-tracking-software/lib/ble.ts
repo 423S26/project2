@@ -205,8 +205,11 @@ export function clearPipelineLogs(): void {
   }
 }
 
-const TRACKER_SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
-const PING_CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1214';
+// Firmware advertises 16-bit UUIDs (service 0xB120, char 0xB11A). Web Bluetooth
+// requires the full 128-bit form for non-standard UUIDs:
+//   0000XXXX-0000-1000-8000-00805f9b34fb  (Bluetooth SIG base UUID)
+const TRACKER_SERVICE_UUID = '0000b120-0000-1000-8000-00805f9b34fb';
+const PING_CHARACTERISTIC_UUID = '0000b11a-0000-1000-8000-00805f9b34fb';
 
 type BLEDevice = {
   gatt?: BLERemoteGATTServer | null;
@@ -294,8 +297,45 @@ export class BLEManager {
         throw new FirmwareConnectionError('No device selected', undefined);
       }
 
-      // Connect to GATT server
-      const server = await device.gatt!.connect();
+      // Surface OS-side disconnects (Windows idle-kill, supervision timeout,
+      // user toggling Bluetooth, etc). Register this BEFORE the first connect
+      // so we never miss an early disconnect during discovery.
+      if (device.addEventListener) {
+        device.addEventListener('gattserverdisconnected', () => {
+          pipelineLog('BLE:CONN', 'warn', 'GATT server disconnected (OS or peer)');
+          this.resetRxAssembler();
+          this.connection = null;
+        });
+      }
+
+      // Connect + discover with retry. On Windows, the firmware's Service
+      // Changed indication can drop the link mid-discovery the first time
+      // a host connects. Retry the whole connect→getService→getChar flow
+      // until it survives long enough for notifications to be enabled.
+      let server!: BLERemoteGATTServer;
+      let service!: BLERemoteGATTService;
+      let characteristic!: BLERemoteGATTCharacteristic;
+      let lastErr: unknown;
+      let connected = false;
+      for (let attempt = 1; attempt <= 5 && !connected; attempt++) {
+        try {
+          server = await device.gatt!.connect();
+          service = await server.getPrimaryService(TRACKER_SERVICE_UUID);
+          characteristic = await service.getCharacteristic(PING_CHARACTERISTIC_UUID);
+          connected = true;
+        } catch (e) {
+          lastErr = e;
+          pipelineLog('BLE:CONN', 'warn', `Connect attempt ${attempt} failed: ${(e as Error).message}`);
+          await new Promise(r => setTimeout(r, 600));
+        }
+      }
+      if (!connected) {
+        throw new FirmwareConnectionError(
+          'GATT link kept dropping during discovery — reboot tracker and forget device in Windows Bluetooth settings',
+          undefined,
+          { cause: (lastErr as Error)?.message },
+        );
+      }
 
       // Retrieve RSSI if supported (Directional Tracking Fallback)
       if (device.watchAdvertisements && device.addEventListener) {
@@ -311,12 +351,6 @@ export class BLEManager {
           pipelineLog('BLE:CONN', 'info', `watchAdvertisements not supported`);
         }
       }
-
-      // Get the service
-      const service = await server.getPrimaryService(TRACKER_SERVICE_UUID);
-
-      // Get the characteristic
-      const characteristic = await service.getCharacteristic(PING_CHARACTERISTIC_UUID);
 
       this.connection = {
         device,
@@ -400,10 +434,18 @@ export class BLEManager {
       // DataView may reference a larger backing buffer. Respect byteOffset/byteLength
       // so we only consume the current BLE notification payload.
       const chunk = new Uint8Array(target.value.buffer, target.value.byteOffset, target.value.byteLength);
+
+      // Firmware path: each notify() carries exactly one complete protobuf Ping
+      // message (no length prefix). Try a direct decode first; if that succeeds,
+      // bypass the chunk assembler entirely. This is the normal hot path.
+      if (chunk.length > 0 && this.tryDecodeWholeFrame(chunk)) {
+        return;
+      }
+
+      // Fallback: legacy/length-prefixed stream or fragmented MTU path.
+      // Accumulate and let splitPingFrames sort it out.
       this.appendChunk(chunk);
 
-      // Firmware streams protobuf frames over 20-byte BLE notifications.
-      // A short chunk usually marks frame end; exact-multiple frames are flushed on idle.
       if (chunk.length < this.BLE_CHUNK_SIZE) {
         this.flushAssembledFrame();
       } else {
@@ -612,6 +654,23 @@ export class BLEManager {
     // Firmware should always set timestamp. Using it as a guard prevents
     // partial fragment decodes from propagating null/default telemetry values.
     return Number.isFinite(ping.timestamp) && ping.timestamp > 0;
+  }
+
+  /**
+   * Attempts to decode a single BLE notification payload as a complete,
+   * unframed protobuf Ping (the firmware's actual wire format). Returns true
+   * on success and dispatches the frame; returns false to let the caller fall
+   * back to the chunk assembler for fragmented or length-prefixed streams.
+   */
+  private tryDecodeWholeFrame(chunk: Uint8Array): boolean {
+    try {
+      const probe = Ping.fromBinary(chunk);
+      if (!this.isLikelyCompletePing(probe)) return false;
+      this.processPingFrame(chunk);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private enqueueCurrentThrow(): void {
