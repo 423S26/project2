@@ -264,7 +264,9 @@ export default function LiveTracker({
 
 		try {
 			const headers = await getAuthHeaders();
-			const url = `${API_BASE_URL}/api/v1/telemetry?deviceId=${encodeURIComponent(telemetryDeviceId)}`;
+			// Backend expects snake_case query param `device_id`. Mismatched casing
+			// previously produced HTTP 400 on every poll.
+			const url = `${API_BASE_URL}/api/v1/telemetry?device_id=${encodeURIComponent(telemetryDeviceId)}`;
 			const response = await fetch(url, {
 				headers,
 			});

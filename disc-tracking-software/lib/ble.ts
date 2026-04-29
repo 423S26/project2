@@ -690,10 +690,7 @@ export class BLEManager {
       ? `GPS(${ping.lat.toFixed(6)},${ping.lon.toFixed(6)},${ping.alt.toFixed(0)}m sats=${ping.sats})`
       : 'GPS(no fix)';
     const imu = `IMU(a=${ping.accelX.toFixed(1)},${ping.accelY.toFixed(1)},${ping.accelZ.toFixed(1)} g=${ping.gyroX.toFixed(0)},${ping.gyroY.toFixed(0)},${ping.gyroZ.toFixed(0)})`;
-
-    // At 10 Hz, log a [BLE:RX] line at most once per second to keep the
-    // pipeline TUI readable. Stats counters still increment for every ping
-    // (we manually update them on the throttled-out path).
+    
     const nowMs = Date.now();
     if (nowMs - this.lastRxLogAt >= this.RX_LOG_INTERVAL_MS) {
       this.lastRxLogAt = nowMs;
