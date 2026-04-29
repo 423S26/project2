@@ -284,6 +284,18 @@ export default function LiveTracker({
 					}
 					return;
 				}
+				if (response.status >= 500) {
+					// Transient server error (Vercel cold-start, pool exhausted, etc).
+					// Back off briefly so we don't pile on. Reuses the same gate
+					// as 403 so the polling loop short-circuits cleanly.
+					apiForbiddenUntilRef.current = Date.now() + 15000;
+					pipelineLog(
+						'GIN:HTTP',
+						'warn',
+						`${response.status} ${response.statusText} — backing off telemetry polling for 15s`,
+					);
+					return;
+				}
 				pipelineLog('GIN:HTTP', 'error', `${response.status} ${response.statusText}`);
 				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 			}
