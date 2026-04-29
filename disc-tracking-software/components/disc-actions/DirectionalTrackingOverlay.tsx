@@ -75,11 +75,11 @@ export default function DirectionalTrackingOverlay({
 
     const hasDiscPosition = discLat != null && discLon != null && (discLat !== 0 || discLon !== 0);
 
-    // Listen for phone compass heading via DeviceOrientation API
+    // Listen for phone compass heading via DeviceOrientation API. On devices
+    // without a compass (e.g. desktop Chrome) these events simply never fire
+    // and `compassRef.current` stays 0, which means the arrow points to true
+    // north — the geographic bearing toward the disc.
     const handleOrientation = (event: DeviceOrientationEvent) => {
-      // webkitCompassHeading is iOS (true compass heading, clockwise from north).
-      // deviceorientationabsolute on Android gives alpha relative to geographic north
-      // (counter-clockwise), so compass heading = (360 - alpha) % 360.
       const webkitHeading = (event as unknown as Record<string, unknown>).webkitCompassHeading;
       let heading: number;
       if (typeof webkitHeading === 'number') {
@@ -90,7 +90,27 @@ export default function DirectionalTrackingOverlay({
         return;
       }
       compassRef.current = heading;
+    };
 
+    window.addEventListener('deviceorientationabsolute', handleOrientation as EventListener);
+    window.addEventListener('deviceorientation', handleOrientation as EventListener);
+
+    // Always track the phone / computer geolocation while the overlay is open.
+    // This works on desktop Chrome (IP-based or Wi-Fi-based fix) and on mobile.
+    if ('geolocation' in navigator) {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          phonePosRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        },
+        (err) => console.warn('[DirectionalTracking] geolocation error:', err.message),
+        { enableHighAccuracy: true, maximumAge: 2000 },
+      );
+    }
+
+    // Recompute the arrow rotation at a steady cadence, decoupled from
+    // orientation events. As soon as both phone and disc have a fix, the
+    // arrow latches onto the real bearing — even with no compass.
+    const tickInterval = setInterval(() => {
       if (hasDiscPosition && phonePosRef.current) {
         const bearing = calculateBearing(
           phonePosRef.current.lat,
@@ -98,52 +118,24 @@ export default function DirectionalTrackingOverlay({
           discLat!,
           discLon!,
         );
-        // Arrow rotation: bearing relative to where the phone is pointing
-        setRotation((bearing - heading + 360) % 360);
+        setRotation((bearing - compassRef.current + 360) % 360);
         setHasRealData(true);
-      }
-    };
-
-    window.addEventListener('deviceorientationabsolute', handleOrientation as EventListener);
-    window.addEventListener('deviceorientation', handleOrientation as EventListener);
-
-    // Track phone GPS position
-    if (hasDiscPosition && 'geolocation' in navigator) {
-      watchIdRef.current = navigator.geolocation.watchPosition(
-        (pos) => {
-          phonePosRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-        },
-        undefined,
-        { enableHighAccuracy: true, maximumAge: 2000 },
-      );
-    }
-
-    // Fallback: if no real orientation data after 2s, spin slowly
-    const fallbackTimeout = setTimeout(() => {
-      if (!hasRealData) {
-        // Keep spinning as visual indicator that real data is unavailable
-      }
-    }, 2000);
-
-    // Fallback spinning when no real compass/GPS
-    let fallbackInterval: NodeJS.Timeout | undefined;
-    if (!hasDiscPosition) {
-      fallbackInterval = setInterval(() => {
+      } else {
+        // No fix yet — gentle spin so the user knows we're still looking.
         setRotation((prev) => (prev + 5) % 360);
-      }, 70);
-    }
+      }
+    }, 100);
 
     return () => {
       window.removeEventListener('deviceorientationabsolute', handleOrientation as EventListener);
       window.removeEventListener('deviceorientation', handleOrientation as EventListener);
-      clearTimeout(fallbackTimeout);
-      if (fallbackInterval) clearInterval(fallbackInterval);
+      clearInterval(tickInterval);
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
       }
     };
-  }, [isOpen, discLat, discLon, hasRealData]);
+  }, [isOpen, discLat, discLon]);
 
   const displayedDistance = unit === 'meters' 
     ? (distance * 0.3048).toFixed(1) 

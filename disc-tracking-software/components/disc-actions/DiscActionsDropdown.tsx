@@ -527,6 +527,10 @@ export default function DiscActionsDropdown({
       });
       persistThrowTrajectory(response.id, trajectory);
       toast.success(`Throw saved: ${distance.toFixed(1)} ft in ${flightTime.toFixed(2)}s.`);
+      // Reset the timer back to 0 every time a throw is successfully recorded
+      // so the next throw starts from a clean slate.
+      setElapsedTime(0);
+      elapsedRef.current = 0;
     } catch (error) {
       toast.error(getErrorMessage(error, 'Unable to save throw. Please try again.'));
     }
