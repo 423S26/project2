@@ -268,6 +268,14 @@ export class BLEManager {
   private lastHoldLogAt = 0;
   private lastHoldLogSize = -1;
 
+  // Chunked-notification reassembly (firmware framing — see firmware send_ping):
+  //   byte 0   : seq (same for every chunk of one Ping; rolls 0..255)
+  //   byte 1   : bit7 = LAST, bits6..0 = chunk index
+  //   byte 2.. : protobuf payload (≤18 B per chunk on Windows ATT-MTU=23)
+  private chunkSeq = -1;
+  private chunkBuf: Uint8Array[] = [];
+  private chunkNextIdx = 0;
+
   private readonly API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
     .replace(/\/+$/, '')
     .replace(/\/api\/v1$/, '');
@@ -308,25 +316,35 @@ export class BLEManager {
         });
       }
 
-      // Connect + discover with retry. On Windows, the firmware's Service
-      // Changed indication can drop the link mid-discovery the first time
-      // a host connects. Retry the whole connect→getService→getChar flow
-      // until it survives long enough for notifications to be enabled.
+      // Connect + discover with retry. On Windows, the first GATT handshake
+      // after a firmware reflash routinely fails the first 1-3 attempts
+      // ("Connection attempt failed" / "Unreachable") while the OS resolves
+      // the device, negotiates encryption, and warms its attribute cache.
+      // We retry with progressive back-off and tear the GATT down between
+      // attempts so we never reuse a half-dead handle.
       let server!: BLERemoteGATTServer;
       let service!: BLERemoteGATTService;
       let characteristic!: BLERemoteGATTCharacteristic;
       let lastErr: unknown;
       let connected = false;
-      for (let attempt = 1; attempt <= 5 && !connected; attempt++) {
+      const MAX_ATTEMPTS = 8;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS && !connected; attempt++) {
         try {
           server = await device.gatt!.connect();
           service = await server.getPrimaryService(TRACKER_SERVICE_UUID);
           characteristic = await service.getCharacteristic(PING_CHARACTERISTIC_UUID);
           connected = true;
+          if (attempt > 1) {
+            pipelineLog('BLE:CONN', 'info', `Connected on attempt ${attempt}`);
+          }
         } catch (e) {
           lastErr = e;
-          pipelineLog('BLE:CONN', 'warn', `Connect attempt ${attempt} failed: ${(e as Error).message}`);
-          await new Promise(r => setTimeout(r, 600));
+          pipelineLog('BLE:CONN', 'warn', `Connect attempt ${attempt}/${MAX_ATTEMPTS} failed: ${(e as Error).message}`);
+          // Tear the half-open link down so the next connect() starts clean.
+          try { if (device.gatt && (device.gatt as BLERemoteGATTServer).connected) device.gatt.disconnect(); } catch { /* ignore */ }
+          // Progressive back-off: 400, 700, 1100, 1500, 1900, 2300, 2700 ms.
+          const delay = 400 + (attempt - 1) * 400;
+          await new Promise(r => setTimeout(r, delay));
         }
       }
       if (!connected) {
@@ -431,27 +449,58 @@ export class BLEManager {
       const target = event.target as { value?: DataView };
       if (!target.value) return;
 
-      // DataView may reference a larger backing buffer. Respect byteOffset/byteLength
-      // so we only consume the current BLE notification payload.
       const chunk = new Uint8Array(target.value.buffer, target.value.byteOffset, target.value.byteLength);
+      if (chunk.length < 2) return;
 
-      // Firmware path: each notify() carries exactly one complete protobuf Ping
-      // message (no length prefix). Try a direct decode first; if that succeeds,
-      // bypass the chunk assembler entirely. This is the normal hot path.
-      if (chunk.length > 0 && this.tryDecodeWholeFrame(chunk)) {
+      const seq    = chunk[0];
+      const hdr    = chunk[1];
+      const isLast = (hdr & 0x80) !== 0;
+      const idx    = hdr & 0x7F;
+      const data   = chunk.subarray(2);
+
+      // New Ping started — reset assembler.
+      if (seq !== this.chunkSeq) {
+        if (this.chunkBuf.length > 0) {
+          pipelineLog(
+            'DECODE:PROTO', 'warn',
+            `Dropping incomplete Ping seq=${this.chunkSeq} (${this.chunkBuf.length} chunks) — got new seq=${seq}`,
+          );
+        }
+        this.chunkSeq     = seq;
+        this.chunkBuf     = [];
+        this.chunkNextIdx = 0;
+      }
+
+      // Out-of-order or duplicate chunk — drop the partial Ping. With a
+      // single-connection BLE link this should essentially never happen.
+      if (idx !== this.chunkNextIdx) {
+        pipelineLog(
+          'DECODE:PROTO', 'warn',
+          `Out-of-order chunk seq=${seq} idx=${idx} expected=${this.chunkNextIdx} — discarding`,
+        );
+        this.chunkSeq     = -1;
+        this.chunkBuf     = [];
+        this.chunkNextIdx = 0;
         return;
       }
 
-      // Fallback: legacy/length-prefixed stream or fragmented MTU path.
-      // Accumulate and let splitPingFrames sort it out.
-      this.appendChunk(chunk);
+      this.chunkBuf.push(data);
+      this.chunkNextIdx++;
 
-      if (chunk.length < this.BLE_CHUNK_SIZE) {
-        this.flushAssembledFrame();
-      } else {
-        this.scheduleFrameFlush();
-      }
+      if (!isLast) return;
 
+      // Reassemble and decode.
+      let total = 0;
+      for (const c of this.chunkBuf) total += c.length;
+      const frame = new Uint8Array(total);
+      let off = 0;
+      for (const c of this.chunkBuf) { frame.set(c, off); off += c.length; }
+
+      this.chunkSeq     = -1;
+      this.chunkBuf     = [];
+      this.chunkNextIdx = 0;
+
+      this.processPingFrame(frame);
     } catch (error) {
       pipelineLog('DECODE:PROTO', 'error', `${(error as Error).message}`);
       logError(error instanceof Error ? error : new Error(String(error)), 'handlePingNotification');
@@ -524,6 +573,9 @@ export class BLEManager {
     this.rxFrameBuffer = [];
     this.lastHoldLogAt = 0;
     this.lastHoldLogSize = -1;
+    this.chunkSeq = -1;
+    this.chunkBuf = [];
+    this.chunkNextIdx = 0;
   }
 
   private logHeldFragment(size: number, trailing: boolean = false): void {
