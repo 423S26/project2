@@ -276,6 +276,11 @@ export class BLEManager {
   private chunkBuf: Uint8Array[] = [];
   private chunkNextIdx = 0;
 
+  // At 10 Hz the BLE:RX pipeline log would emit 10 lines/sec; throttle to
+  // one line per second. Per-ping decode + listeners still run unthrottled.
+  private readonly RX_LOG_INTERVAL_MS = 1000;
+  private lastRxLogAt = 0;
+
   private readonly API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
     .replace(/\/+$/, '')
     .replace(/\/api\/v1$/, '');
@@ -686,12 +691,22 @@ export class BLEManager {
       : 'GPS(no fix)';
     const imu = `IMU(a=${ping.accelX.toFixed(1)},${ping.accelY.toFixed(1)},${ping.accelZ.toFixed(1)} g=${ping.gyroX.toFixed(0)},${ping.gyroY.toFixed(0)},${ping.gyroZ.toFixed(0)})`;
 
-    pipelineLog(
-      'BLE:RX', 'info',
-      `${data.length}B ${gps} ${imu} bat=${ping.battPct}%`,
-      hexStr,
-      decodedFields,
-    );
+    // At 10 Hz, log a [BLE:RX] line at most once per second to keep the
+    // pipeline TUI readable. Stats counters still increment for every ping
+    // (we manually update them on the throttled-out path).
+    const nowMs = Date.now();
+    if (nowMs - this.lastRxLogAt >= this.RX_LOG_INTERVAL_MS) {
+      this.lastRxLogAt = nowMs;
+      pipelineLog(
+        'BLE:RX', 'info',
+        `${data.length}B ${gps} ${imu} bat=${ping.battPct}%`,
+        hexStr,
+        decodedFields,
+      );
+    } else {
+      pipelineStats.rxCount++;
+      pipelineStats.lastRxAt = nowMs;
+    }
 
     if (this.throwActive) {
       this.pingBuffer.push(ping);
