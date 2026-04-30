@@ -15,6 +15,7 @@ import { discAPI, throwAPI } from '@/lib/api-client';
 import { bleManager } from '@/lib/ble';
 import { Ping } from '@/lib/pb/hardware';
 import { phoneSensors, haversineMeters, type PhoneSensorSnapshot } from '@/lib/phone-sensors';
+import { discPositionStore, type DiscPositionSnapshot } from '@/lib/disc-position-store';
 import { toast } from 'sonner';
 
 type DiscActionsDropdownProps = {
@@ -188,6 +189,9 @@ export default function DiscActionsDropdown({
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
   const [activeTrajectory, setActiveTrajectory] = useState<TrajectoryPoint[]>([]);
   const phonePosRef = useRef<{ lat: number; lon: number } | null>(null);
+  // Latest disc fix from any source (BLE or API fallback) — mirrors the
+  // Δ value rendered in the live debug console.  Subscribed below.
+  const discPosLiveRef = useRef<DiscPositionSnapshot | null>(null);
   const rawTrajectoryRef = useRef<RawTrajectorySample[]>([]);
   const streamIdleTimerRef = useRef<NodeJS.Timeout | null>(null);
   const distanceBaselineRef = useRef<number | null>(null);
@@ -241,6 +245,13 @@ export default function DiscActionsDropdown({
       phoneOrientationRef.current = snap.orientation;
       if (snap.gps) {
         phonePosRef.current = { lat: snap.gps.lat, lon: snap.gps.lon };
+        // Recompute live Δ on every phone-GPS update so the UI tracks
+        // the user's motion even when the disc is stationary.
+        const disc = discPosLiveRef.current;
+        if (disc) {
+          const m = haversineMeters(snap.gps.lat, snap.gps.lon, disc.lat, disc.lon);
+          if (Number.isFinite(m)) setLiveDistanceMeters(m);
+        }
       }
       // Track peak motion magnitudes during an active throw so we can use
       // them when the timer stops.  Reset is handled by startTiming().
@@ -251,6 +262,22 @@ export default function DiscActionsDropdown({
         if (snap.motion.impulseG > peakPhoneImpulseRef.current) {
           peakPhoneImpulseRef.current = snap.motion.impulseG;
         }
+      }
+    });
+  }, []);
+
+  // Subscribe to the shared disc-position store.  Any source (live BLE
+  // ping in this component, or API-fallback poll inside
+  // TelemetryLiveTracker) publishes here, and we recompute the live Δ
+  // shown in the user-facing TrackerDisplay so it always equals the
+  // Δ value in the debug console — nothing more, nothing less.
+  useEffect(() => {
+    return discPositionStore.subscribe((snap) => {
+      discPosLiveRef.current = snap;
+      const phone = phonePosRef.current;
+      if (phone) {
+        const m = haversineMeters(phone.lat, phone.lon, snap.lat, snap.lon);
+        if (Number.isFinite(m)) setLiveDistanceMeters(m);
       }
     });
   }, []);
@@ -300,18 +327,13 @@ export default function DiscActionsDropdown({
 
       // Update tracker distance from phone position to disc position
       if (phonePosRef.current && hasGpsFix) {
-        // Raw phone↔disc haversine in meters — mirrors the Δ value emitted
-        // to the debug console.  Powers the live distance circle directly.
-        const rawDistMeters = haversineMeters(
-          phonePosRef.current.lat,
-          phonePosRef.current.lon,
-          ping.lat,
-          ping.lon,
-        );
-        if (Number.isFinite(rawDistMeters)) {
-          setLiveDistanceMeters(rawDistMeters);
-        }
-
+        // Δ (raw phone↔disc haversine) is now driven by the shared
+        // disc-position store + phone-GPS subscriber above, so we no
+        // longer need to publish liveDistanceMeters from this BLE
+        // handler.  We keep the calibrated/smoothed feet pipeline below
+        // because it powers the throw-trigger heuristic, which depends
+        // on a stationary baseline + rising-edge detector that only
+        // makes sense on the steady BLE-wire stream.
         const rawDistFeet = haversineDistanceFeet(
           phonePosRef.current.lat,
           phonePosRef.current.lon,

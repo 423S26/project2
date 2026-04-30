@@ -18,6 +18,7 @@ import {
   bleManager,
 } from '@/lib/ble';
 import { usePhoneSensors, haversineMeters, bearingDegrees } from '@/lib/phone-sensors';
+import { discPositionStore } from '@/lib/disc-position-store';
 
 
 interface TelemetryData {
@@ -162,6 +163,11 @@ export default function LiveTracker({
 		const unsubscribe = bleManager.onPing((ping: Ping) => {
 			bleLastPingRef.current = Date.now();
 			setLastBlePing(ping);
+			// Publish to the shared disc-position store so any subscriber
+			// (TrackerDisplay, etc.) can compute live Δ from this BLE fix.
+			if (hasReliableBleFix(ping)) {
+				discPositionStore.publish(ping.lat, ping.lon, 'ble');
+			}
 			// Derived metrics (computed client-side from raw BLE fields)
 			const rpm = rpmFromGyroZ(ping.gyroZ);
 			const wobble = Math.abs(ping.accelZ - 1.0);
@@ -292,6 +298,17 @@ export default function LiveTracker({
 			if (telemetryUpdates.length > 0) {
 				// Use the most recent telemetry update (API fallback only)
 				const latestUpdate = telemetryUpdates[telemetryUpdates.length - 1];
+				// Publish to the shared disc-position store as an API-source
+				// fix.  The store guards against clobbering a fresher BLE fix.
+				const latLonOk =
+					latestUpdate.lat !== 0 &&
+					latestUpdate.lon !== 0 &&
+					Math.abs(latestUpdate.lat) <= 90 &&
+					Math.abs(latestUpdate.lon) <= 180 &&
+					(latestUpdate.hdop == null || latestUpdate.hdop <= 10);
+				if (latLonOk) {
+					discPositionStore.publish(latestUpdate.lat, latestUpdate.lon, 'api');
+				}
 				const telemetryData: TelemetryData = {
 					deviceId: latestUpdate.deviceId,
 					lat: latestUpdate.lat,
