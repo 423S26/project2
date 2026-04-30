@@ -8,7 +8,7 @@ import { DistanceUnit } from './types';
 import { Ping } from '@/lib/pb/hardware';
 
 type Props = {
-  distance: number;       // always in feet from parent
+  distance: number;       // always in meters from parent (raw phone↔disc Δ)
   unit?: DistanceUnit;    // 'feet' | 'meters'
   batteryLevel?: number;  // 0-100, from device telemetry
   discLat?: number;       // disc GPS latitude from telemetry
@@ -17,12 +17,15 @@ type Props = {
   rssi?: number | null;
 };
 
+// 1 meter = 3.280839895 feet (canonical conversion)
+const FEET_PER_METER = 3.280839895;
+
 export default function TrackerDisplay({ distance, unit, batteryLevel, discLat, discLon, currentPing, rssi }: Props) {
-  const displayedDistance = unit === 'meters' 
-    ? (distance * 0.3048).toFixed(1) 
-    : distance.toFixed(0);
-  
-  const label = unit === 'meters' ? 'm' : 'ft';
+  const displayedDistance = unit === 'feet'
+    ? (distance * FEET_PER_METER).toFixed(0)
+    : distance.toFixed(1);
+
+  const label = unit === 'feet' ? 'ft' : 'm';
 
   const displayBattery = batteryLevel ?? null;
 

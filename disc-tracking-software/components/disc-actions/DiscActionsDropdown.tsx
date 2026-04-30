@@ -14,7 +14,7 @@ import { Disc } from './types';
 import { discAPI, throwAPI } from '@/lib/api-client';
 import { bleManager } from '@/lib/ble';
 import { Ping } from '@/lib/pb/hardware';
-import { phoneSensors, type PhoneSensorSnapshot } from '@/lib/phone-sensors';
+import { phoneSensors, haversineMeters, type PhoneSensorSnapshot } from '@/lib/phone-sensors';
 import { toast } from 'sonner';
 
 type DiscActionsDropdownProps = {
@@ -158,6 +158,10 @@ export default function DiscActionsDropdown({
   const [selectedDisc, setSelectedDisc] = useState<Disc | null>(null);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [trackerDistance, setTrackerDistance] = useState<number | null>(null);
+  // Raw phone↔disc haversine distance in meters — the exact value shown
+  // as Δ in the live debug console.  TrackerDisplay renders this directly
+  // (converted to feet client-side when settings.distanceUnit === 'feet').
+  const [liveDistanceMeters, setLiveDistanceMeters] = useState<number | null>(null);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [showAddPopup, setShowAddPopup] = useState(false);
   const [discName, setDiscName] = useState('');
@@ -296,6 +300,18 @@ export default function DiscActionsDropdown({
 
       // Update tracker distance from phone position to disc position
       if (phonePosRef.current && hasGpsFix) {
+        // Raw phone↔disc haversine in meters — mirrors the Δ value emitted
+        // to the debug console.  Powers the live distance circle directly.
+        const rawDistMeters = haversineMeters(
+          phonePosRef.current.lat,
+          phonePosRef.current.lon,
+          ping.lat,
+          ping.lon,
+        );
+        if (Number.isFinite(rawDistMeters)) {
+          setLiveDistanceMeters(rawDistMeters);
+        }
+
         const rawDistFeet = haversineDistanceFeet(
           phonePosRef.current.lat,
           phonePosRef.current.lon,
@@ -394,6 +410,7 @@ export default function DiscActionsDropdown({
     setSelectedDisc(disc);
     setSyncStatus('idle');
     setTrackerDistance(null);
+    setLiveDistanceMeters(null);
     setShowDiscList(false);
   };
 
@@ -415,6 +432,7 @@ export default function DiscActionsDropdown({
 
       setSyncStatus('success');
       setTrackerDistance(0); // Will be updated from live BLE telemetry pings
+      setLiveDistanceMeters(0);
       closeDropdown();
       toast.success(`Connected to ${selectedDisc.name}. Telemetry batching is active.`);
 
@@ -445,6 +463,7 @@ export default function DiscActionsDropdown({
       setSelectedDisc(null);
       setSyncStatus('idle');
       setTrackerDistance(null);
+      setLiveDistanceMeters(null);
       setShowRemoveConfirm(false);
       closeDropdown();
       toast.success('Disc removed from your collection.');
@@ -676,7 +695,7 @@ export default function DiscActionsDropdown({
       {syncStatus === 'success' && trackerDistance !== null && (
         <>
           <TrackerDisplay
-            distance={trackerDistance}
+            distance={liveDistanceMeters ?? 0}
             unit={settings.distanceUnit}
             batteryLevel={batteryLevel ?? undefined}
             discLat={discLat}

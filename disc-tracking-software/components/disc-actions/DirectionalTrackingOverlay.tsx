@@ -168,11 +168,11 @@ export default function DirectionalTrackingOverlay({
     return () => clearInterval(tickInterval);
   }, [isOpen, computeRawRelative]);
 
-  const displayedDistance = unit === 'meters'
-    ? (distance * FEET_TO_METERS).toFixed(1)
-    : distance.toFixed(0);
+  const displayedDistance = unit === 'feet'
+    ? (distance * (1 / FEET_TO_METERS)).toFixed(0)
+    : distance.toFixed(1);
 
-  const label = unit === 'meters' ? 'm' : 'ft';
+  const label = unit === 'feet' ? 'ft' : 'm';
 
   // Calculate RSSI mapping: at RSSI_NEAR_DBM (close) -> RSSI_MIN_SCALE,
   // weaker signal -> larger uncertainty radius up to RSSI_MAX_SCALE.
