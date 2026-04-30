@@ -466,9 +466,13 @@ export class BLEManager {
       // New Ping started — reset assembler.
       if (seq !== this.chunkSeq) {
         if (this.chunkBuf.length > 0) {
+          // Single-chunk Pings sometimes lose the trailing isLast bit on
+          // the wire when notifications are queued; the next seq simply
+          // starts a fresh frame.  This is normal at 5 Hz over BLE —
+          // log at info level so it doesn't spam the warn channel.
           pipelineLog(
-            'DECODE:PROTO', 'warn',
-            `Dropping incomplete Ping seq=${this.chunkSeq} (${this.chunkBuf.length} chunks) — got new seq=${seq}`,
+            'DECODE:PROTO', 'info',
+            `Resyncing assembler: prev seq=${this.chunkSeq} (${this.chunkBuf.length} chunks) → new seq=${seq}`,
           );
         }
         this.chunkSeq     = seq;
@@ -690,7 +694,7 @@ export class BLEManager {
       ? `GPS(${ping.lat.toFixed(6)},${ping.lon.toFixed(6)},${ping.alt.toFixed(0)}m sats=${ping.sats})`
       : 'GPS(no fix)';
     const imu = `IMU(a=${ping.accelX.toFixed(1)},${ping.accelY.toFixed(1)},${ping.accelZ.toFixed(1)} g=${ping.gyroX.toFixed(0)},${ping.gyroY.toFixed(0)},${ping.gyroZ.toFixed(0)})`;
-    
+
     const nowMs = Date.now();
     if (nowMs - this.lastRxLogAt >= this.RX_LOG_INTERVAL_MS) {
       this.lastRxLogAt = nowMs;

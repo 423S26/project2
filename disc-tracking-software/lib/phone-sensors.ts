@@ -239,22 +239,43 @@ class PhoneSensorManager {
     }
 
     // ── DeviceMotion (accel + gyro) ─────────────────────────────────
+    //
+    // IMPORTANT: Chrome on Android will happily fire `devicemotion`
+    // events with all-null sensor fields when the underlying hardware
+    // sensor is unavailable / paused (insecure context, sensor permission
+    // denied, sensor overheated, etc.).  In that case `acc.x === null`
+    // for every event and our impulseG math collapses to a constant
+    // `|0 − 9.8|/9.8 = 1.0` while rotMagnitude stays 0 — which is
+    // exactly the "frozen 1.00g, 0°/s" symptom you'll see on devices
+    // where motion is mis-reported as alive.  Reject those events so
+    // `motion` stays null until we get genuinely numeric values.
     this.motionHandler = (e: DeviceMotionEvent) => {
       const acc = e.accelerationIncludingGravity ?? e.acceleration;
       const rot = e.rotationRate;
-      if (!acc && !rot) return;
 
-      const ax = acc?.x ?? 0;
-      const ay = acc?.y ?? 0;
-      const az = acc?.z ?? 0;
-      // Subtract 1g rest magnitude to get impulse component.
-      const mag = Math.sqrt(ax * ax + ay * ay + az * az);
+      const accValid =
+        !!acc &&
+        (typeof acc.x === 'number' ||
+          typeof acc.y === 'number' ||
+          typeof acc.z === 'number');
+      const rotValid =
+        !!rot &&
+        (typeof rot.alpha === 'number' ||
+          typeof rot.beta === 'number' ||
+          typeof rot.gamma === 'number');
+
+      if (!accValid && !rotValid) return;
+
+      const ax = (acc?.x as number | null) ?? 0;
+      const ay = (acc?.y as number | null) ?? 0;
+      const az = (acc?.z as number | null) ?? 0;
+      const mag = accValid ? Math.sqrt(ax * ax + ay * ay + az * az) : 9.80665;
       const impulseG = Math.abs(mag - 9.80665) / 9.80665;
 
-      const ra = rot?.alpha ?? 0;
-      const rb = rot?.beta ?? 0;
-      const rg = rot?.gamma ?? 0;
-      const rotMag = Math.sqrt(ra * ra + rb * rb + rg * rg);
+      const ra = (rot?.alpha as number | null) ?? 0;
+      const rb = (rot?.beta as number | null) ?? 0;
+      const rg = (rot?.gamma as number | null) ?? 0;
+      const rotMag = rotValid ? Math.sqrt(ra * ra + rb * rb + rg * rg) : 0;
 
       this.snapshot = {
         ...this.snapshot,
@@ -313,7 +334,63 @@ class PhoneSensorManager {
       'deviceorientation',
       this.orientationHandler as EventListener,
     );
+
+    // ── AbsoluteOrientationSensor fallback (Generic Sensor API) ─────
+    //
+    // On some Pixels, Chrome will not start firing
+    // `deviceorientationabsolute` events until the magnetometer is
+    // explicitly woken up via the Generic Sensor API.  When available
+    // we also start an AbsoluteOrientationSensor at 30 Hz and convert
+    // its quaternion into a compass heading.  This guarantees the
+    // COMPASS pill turns green on platforms that ignore the legacy
+    // event-based path.
+    this.startAbsoluteOrientationSensor();
   }
+
+  private absoluteSensor: { stop: () => void } | null = null;
+
+  private startAbsoluteOrientationSensor(): void {
+    type SensorCtor = new (opts: { frequency: number; referenceFrame?: string }) => {
+      quaternion?: number[] | null;
+      start: () => void;
+      stop: () => void;
+      addEventListener: (ev: 'reading' | 'error', cb: (e: unknown) => void) => void;
+    };
+    const w = window as unknown as { AbsoluteOrientationSensor?: SensorCtor };
+    if (!w.AbsoluteOrientationSensor) return;
+    try {
+      const sensor = new w.AbsoluteOrientationSensor({
+        frequency: 30,
+        referenceFrame: 'screen',
+      });
+      sensor.addEventListener('reading', () => {
+        const q = sensor.quaternion;
+        if (!q || q.length < 4) return;
+        const [x, y, z, w_] = q;
+        // Yaw (heading) from quaternion, in radians, CCW from north.
+        const yaw = Math.atan2(2 * (w_ * z + x * y), 1 - 2 * (y * y + z * z));
+        const compass = ((-toDeg(yaw) + 360) % 360 + 360) % 360;
+        this.snapshot = {
+          ...this.snapshot,
+          orientation: {
+            compass,
+            beta: this.snapshot.orientation?.beta ?? 0,
+            gamma: this.snapshot.orientation?.gamma ?? 0,
+            absolute: true,
+            timestamp: Date.now(),
+          },
+        };
+        this.hasAbsoluteOrientation = true;
+        this.throttledEmit();
+      });
+      sensor.addEventListener('error', (e: unknown) => {
+        console.warn('[phone-sensors] AbsoluteOrientationSensor error:', e);
+      });
+      sensor.start();
+      this.absoluteSensor = sensor;
+    } catch (e) {
+      console.warn('[phone-sensors] AbsoluteOrientationSensor unavailable:', e);
+    }
 
   private stop(): void {
     if (typeof window === 'undefined') return;
@@ -335,6 +412,14 @@ class PhoneSensorManager {
         this.orientationHandler as EventListener,
       );
       this.orientationHandler = null;
+    }
+    if (this.absoluteSensor) {
+      try {
+        this.absoluteSensor.stop();
+      } catch {
+        /* noop */
+      }
+      this.absoluteSensor = null;
     }
     this.started = false;
     this.hasAbsoluteOrientation = false;

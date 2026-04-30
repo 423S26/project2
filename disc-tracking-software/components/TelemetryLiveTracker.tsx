@@ -573,6 +573,20 @@ export default function LiveTracker({
 								<div>RPM*: <span className="text-yellow-300">{(phoneSnap.motion.rotMagnitude / 6).toFixed(0)}</span></div>
 							</div>
 						)}
+						{phoneSnap.gps && (
+							<div className="grid grid-cols-2 gap-x-3 mt-1 text-[10px] text-white/70">
+								<div>lat: <span className="text-cyan-300">{phoneSnap.gps.lat.toFixed(6)}</span></div>
+								<div>lon: <span className="text-cyan-300">{phoneSnap.gps.lon.toFixed(6)}</span></div>
+								<div>acc: <span className="text-cyan-300">{phoneSnap.gps.accuracy.toFixed(1)}m</span></div>
+								<div>spd: <span className="text-cyan-300">{phoneSnap.gps.speed != null ? `${phoneSnap.gps.speed.toFixed(1)}m/s` : '—'}</span></div>
+							</div>
+						)}
+						{phoneSnap.orientation && (
+							<div className="mt-1 text-[10px] text-white/70">
+								heading: <span className="text-cyan-300">{phoneSnap.orientation.compass.toFixed(0)}°</span>
+								<span className="text-white/40 ml-2">({phoneSnap.orientation.absolute ? 'true north' : 'relative'})</span>
+							</div>
+						)}
 					</div>
 
 					{/* ── Pipeline Counters ── */}
