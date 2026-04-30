@@ -457,6 +457,22 @@ export class BLEManager {
       const chunk = new Uint8Array(target.value.buffer, target.value.byteOffset, target.value.byteLength);
       if (chunk.length < 2) return;
 
+      // ── Fast path: unframed whole-Ping notification ────────────────
+      //
+      // The current firmware actually delivers one complete protobuf
+      // Ping per BLE notification (no chunk header).  If we treat the
+      // first two bytes as `(seq, hdr)` we end up with idx=0, isLast=0
+      // forever and the assembler discards every frame on the next
+      // notification ("Resyncing assembler: prev seq=N (1 chunks)" log
+      // spam).  Probe the raw payload first; if it parses as a valid
+      // Ping, dispatch it directly and skip the assembler entirely.
+      if (this.tryDecodeWholeFrame(chunk)) {
+        this.chunkSeq     = -1;
+        this.chunkBuf     = [];
+        this.chunkNextIdx = 0;
+        return;
+      }
+
       const seq    = chunk[0];
       const hdr    = chunk[1];
       const isLast = (hdr & 0x80) !== 0;
@@ -466,14 +482,21 @@ export class BLEManager {
       // New Ping started — reset assembler.
       if (seq !== this.chunkSeq) {
         if (this.chunkBuf.length > 0) {
-          // Single-chunk Pings sometimes lose the trailing isLast bit on
-          // the wire when notifications are queued; the next seq simply
-          // starts a fresh frame.  This is normal at 5 Hz over BLE —
-          // log at info level so it doesn't spam the warn channel.
-          pipelineLog(
-            'DECODE:PROTO', 'info',
-            `Resyncing assembler: prev seq=${this.chunkSeq} (${this.chunkBuf.length} chunks) → new seq=${seq}`,
-          );
+          // Try to salvage the orphan as a complete frame before we
+          // discard it.  Some firmwares forget to set the `isLast` bit
+          // on single-chunk Pings; if the buffered bytes decode cleanly
+          // we still want the data on the wire.
+          let total = 0;
+          for (const c of this.chunkBuf) total += c.length;
+          const orphan = new Uint8Array(total);
+          let off = 0;
+          for (const c of this.chunkBuf) { orphan.set(c, off); off += c.length; }
+          if (!this.tryDecodeWholeFrame(orphan)) {
+            pipelineLog(
+              'DECODE:PROTO', 'info',
+              `Resyncing assembler: prev seq=${this.chunkSeq} (${this.chunkBuf.length} chunks) → new seq=${seq}`,
+            );
+          }
         }
         this.chunkSeq     = seq;
         this.chunkBuf     = [];

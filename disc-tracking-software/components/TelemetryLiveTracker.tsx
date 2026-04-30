@@ -457,12 +457,33 @@ export default function LiveTracker({
 					</div>
 
 					{/* ── Telemetry Data ── */}
-					{(lastBlePing || lastPing) && (
-						<div className="bg-slate-800/60 rounded p-2 text-xs font-mono border border-slate-700/50 space-y-2">
+					{/* Always render the device panel so the user can see the     */}
+					{/* tracker's state side-by-side with the phone sensors below, */}
+					{/* even before the first Ping has been decoded.               */}
+					<div className="bg-slate-800/60 rounded p-2 text-xs font-mono border border-slate-700/50 space-y-2">
 							<div className="flex items-center justify-between">
-								<span className="text-[10px] text-gray-500">LIVE TELEMETRY {lastBlePing ? '(BLE WIRE)' : '(API FALLBACK)'}</span>
-								<span className="text-[10px] text-gray-600">t={lastBlePing ? lastBlePing.timestamp : lastPing!.received_at}</span>
+								<span className="text-[10px]">
+									<span className="text-orange-400">DEVICE</span>
+									<span className="text-gray-500"> · LIVE TELEMETRY {lastBlePing ? '(BLE WIRE)' : lastPing ? '(API FALLBACK)' : '(awaiting…)'}</span>
+								</span>
+								<span className="text-[10px] text-gray-600">
+									{lastBlePing
+										? `t=${lastBlePing.timestamp}`
+										: lastPing
+											? `t=${lastPing.received_at}`
+											: pipeStats.bleConnected
+												? 'BLE link up — waiting for first ping'
+												: 'no BLE link'}
+								</span>
 							</div>
+
+							{!lastBlePing && !lastPing && (
+								<div className="text-[10px] text-gray-500 italic py-1">
+									{pipeStats.bleConnected
+										? 'Connected to disc — first telemetry packet has not arrived yet.'
+										: 'Pair a tracker via Bluetooth to see live device GPS, IMU and battery.'}
+								</div>
+							)}
 
 							{lastBlePing ? (
 								<>
@@ -552,7 +573,6 @@ export default function LiveTracker({
 								</>
 							)}
 						</div>
-					)}
 
 					{/* ── Phone Sensor Compensation ── */}
 					{/* The demo device has no working IMU, so the phone supplies   */}
