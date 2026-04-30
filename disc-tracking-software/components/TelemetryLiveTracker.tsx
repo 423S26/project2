@@ -17,6 +17,7 @@ import {
   type PipelineLogEntry,
   bleManager,
 } from '@/lib/ble';
+import { usePhoneSensors, haversineMeters, bearingDegrees } from '@/lib/phone-sensors';
 
 
 interface TelemetryData {
@@ -123,58 +124,20 @@ export default function LiveTracker({
         const [userHeading, setUserHeading] = useState<number | null>(null);
         const [currentRssi, setCurrentRssi] = useState<number | null>(null);
 
-        // Track user geolocation for relative distance
+        // The phone-sensor singleton handles geolocation + DeviceMotion +
+        // DeviceOrientation in one place; we just mirror what we need into
+        // local state so the rest of the component (and existing JSX)
+        // continues to work unchanged.  This replaces two effects that
+        // each registered their own listeners.
+        const phoneSnap = usePhoneSensors();
         useEffect(() => {
-                if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
-                        const watchId = navigator.geolocation.watchPosition(
-                                (pos) => {
-                                        setUserLocation({
-                                                lat: pos.coords.latitude,
-                                                lon: pos.coords.longitude,
-                                        });
-                                },
-                                (err) => console.warn('Geolocation error:', err.message),
-                                { enableHighAccuracy: true, maximumAge: 5000 }
-                        );
-                        return () => navigator.geolocation.clearWatch(watchId);
+                if (phoneSnap.gps) {
+                        setUserLocation({ lat: phoneSnap.gps.lat, lon: phoneSnap.gps.lon });
                 }
-        }, []);
-
-        // Track user device orientation
-        const hasAbsoluteOrientationRef = useRef(false);
-        useEffect(() => {
-                const handleOrientation = (event: DeviceOrientationEvent | Event | unknown) => {
-                        const ev = event as Record<string, unknown>;
-                        // Prefer absolute compass heading. Once we have it, ignore relative events.
-                        const isAbsolute = ev.absolute === true || typeof ev.webkitCompassHeading === 'number';
-                        if (!isAbsolute && hasAbsoluteOrientationRef.current) return;
-
-                        let heading: number | null = null;
-                        if (typeof ev.webkitCompassHeading === "number") {
-                                // iOS: true compass heading, clockwise from north
-                                heading = ev.webkitCompassHeading;
-                                hasAbsoluteOrientationRef.current = true;
-                        } else if (typeof ev.alpha === "number" && ev.alpha !== null) {
-                                // deviceorientationabsolute alpha is CCW from north → convert to CW
-                                heading = (360 - (ev.alpha as number) + 360) % 360;
-                                if (isAbsolute) hasAbsoluteOrientationRef.current = true;
-                        }
-                        if (heading !== null) {
-                                setUserHeading(heading);
-                        }
-                };
-                
-                if (typeof window !== "undefined") {
-                        window.addEventListener("deviceorientationabsolute", handleOrientation as EventListener);
-                        window.addEventListener("deviceorientation", handleOrientation as EventListener);
+                if (phoneSnap.orientation) {
+                        setUserHeading(phoneSnap.orientation.compass);
                 }
-                return () => {
-                        if (typeof window !== "undefined") {
-                                window.removeEventListener("deviceorientationabsolute", handleOrientation as EventListener);
-                                window.removeEventListener("deviceorientation", handleOrientation as EventListener);
-                        }
-                };
-        }, []);
+        }, [phoneSnap.gps, phoneSnap.orientation]);
 	useEffect(() => {
 		const unsub = onPipelineLog((_entry, stats) => {
 			setPipeStats({ ...stats });
@@ -425,24 +388,9 @@ export default function LiveTracker({
 			(activePing.hdop == null || (activePing.hdop > 0 && activePing.hdop <= 2.5))
 		);
 	if (userLocation && activePing && canUseGpsDistance) {
-		const R = 6371e3; // Earth radius in meters
-		const lat1 = (userLocation.lat * Math.PI) / 180;
-		const lat2 = (activePing.lat * Math.PI) / 180;
-		const dLat = ((activePing.lat - userLocation.lat) * Math.PI) / 180;
-		const dLon = ((activePing.lon - userLocation.lon) * Math.PI) / 180;
-
-		const a =
-			Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-			Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-		const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-		distanceToDisc = R * c;
-
-		const y = Math.sin(dLon) * Math.cos(lat2);
-		const x =
-			Math.cos(lat1) * Math.sin(lat2) -
-			Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-		const brng = Math.atan2(y, x);
-		bearingToDisc = ((brng * 180) / Math.PI + 360) % 360;
+		const meters = haversineMeters(userLocation.lat, userLocation.lon, activePing.lat, activePing.lon);
+		distanceToDisc = meters;
+		bearingToDisc = bearingDegrees(userLocation.lat, userLocation.lon, activePing.lat, activePing.lon);
 		if (userHeading !== null) {
 			relativeBearing = ((bearingToDisc - userHeading) + 360) % 360;
 		}
@@ -595,6 +543,37 @@ export default function LiveTracker({
 							)}
 						</div>
 					)}
+
+					{/* ── Phone Sensor Compensation ── */}
+					{/* The demo device has no working IMU, so the phone supplies   */}
+					{/* spin / impulse / compass data.  This row exposes the live   */}
+					{/* state of those readings + the phone↔disc GPS drift (Δ).    */}
+					<div className="bg-slate-800/60 rounded p-2 text-xs font-mono border border-slate-700/50">
+						<div className="flex items-center gap-3 text-[10px]">
+							<span className="text-cyan-400">PHONE SENSORS</span>
+							<span className={phoneSnap.gpsActive ? 'text-green-400' : 'text-gray-500'}>
+								{phoneSnap.gpsActive ? '● GPS' : '○ GPS'}
+							</span>
+							<span className={phoneSnap.motion ? 'text-green-400' : 'text-gray-500'}>
+								{phoneSnap.motion ? '● MOTION' : '○ MOTION'}
+							</span>
+							<span className={phoneSnap.orientation ? 'text-green-400' : 'text-gray-500'}>
+								{phoneSnap.orientation ? '● COMPASS' : '○ COMPASS'}
+							</span>
+							{distanceToDisc !== null && (
+								<span className="ml-auto text-[#54c4c3]">
+									Δ {distanceToDisc < 1 ? distanceToDisc.toFixed(2) : distanceToDisc.toFixed(1)} m
+								</span>
+							)}
+						</div>
+						{phoneSnap.motion && (
+							<div className="grid grid-cols-3 gap-x-3 mt-1 text-[10px] text-white/70">
+								<div>|a|: <span className="text-yellow-300">{phoneSnap.motion.impulseG.toFixed(2)}g</span></div>
+								<div>|ω|: <span className="text-orange-300">{phoneSnap.motion.rotMagnitude.toFixed(0)}°/s</span></div>
+								<div>RPM*: <span className="text-yellow-300">{(phoneSnap.motion.rotMagnitude / 6).toFixed(0)}</span></div>
+							</div>
+						)}
+					</div>
 
 					{/* ── Pipeline Counters ── */}
 					<div className="grid grid-cols-2 gap-2">

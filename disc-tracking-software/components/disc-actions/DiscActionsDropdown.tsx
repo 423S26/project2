@@ -14,6 +14,7 @@ import { Disc } from './types';
 import { discAPI, throwAPI } from '@/lib/api-client';
 import { bleManager } from '@/lib/ble';
 import { Ping } from '@/lib/pb/hardware';
+import { phoneSensors, type PhoneSensorSnapshot } from '@/lib/phone-sensors';
 import { toast } from 'sonner';
 
 type DiscActionsDropdownProps = {
@@ -41,6 +42,15 @@ const MAX_HDOP_FOR_FIX = 2.5;
 const STATIONARY_SPEED_MPS = 0.8;
 const DISTANCE_NOISE_FLOOR_FEET = 10;
 const DISTANCE_SMOOTHING_ALPHA = 0.2;
+
+// User-supplied throw-capture trigger: a real throw must put the disc more
+// than ~2 ft (0.6 m) from the operator's phone.  Anything closer is noise
+// (the device sitting on the bag, power-on jitter, GPS wander, etc.).
+const THROW_TRIGGER_FEET = 2;
+// We require the distance to be both > 2 ft AND increasing for a brief
+// window before we commit to starting the throw timer, otherwise a single
+// noisy GPS jump would spuriously start a throw.
+const THROW_RISING_SAMPLES = 2;
 
 /** Calculate distance in feet between two GPS coordinates using haversine formula */
 function haversineDistanceFeet(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -163,6 +173,21 @@ export default function DiscActionsDropdown({
   const startTimingRef = useRef<() => void>(() => undefined);
   const stopTimingRef = useRef<(forceSave?: boolean) => Promise<void>>(async () => undefined);
 
+  // ── Phone-sensor (compensates for the demo unit's missing IMU) ──
+  // The demo device's onboard IMU is unrecoverable, so spin / impulse must
+  // be derived from the operator's phone.  We mirror the live snapshot
+  // into refs so the BLE-ping handler can read the freshest values
+  // without re-subscribing.  We also capture peak rotation-rate during
+  // the throw window as a proxy for RPM.
+  const phoneMotionRef = useRef<PhoneSensorSnapshot['motion']>(null);
+  const phoneOrientationRef = useRef<PhoneSensorSnapshot['orientation']>(null);
+  const peakPhoneRotMagRef = useRef<number>(0);
+  const peakPhoneImpulseRef = useRef<number>(0);
+  // Number of consecutive samples with calibratedFeet > THROW_TRIGGER_FEET
+  // and increasing.  Once >= THROW_RISING_SAMPLES we commit to the throw.
+  const risingStreakRef = useRef<number>(0);
+  const lastCalibratedFeetRef = useRef<number>(0);
+
   useEffect(() => {
     setDiscs(currentDiscs);
   }, [currentDiscs]);
@@ -181,6 +206,30 @@ export default function DiscActionsDropdown({
   useEffect(() => {
     elapsedRef.current = elapsedTime;
   }, [elapsedTime]);
+
+  // Subscribe once to the singleton phone-sensor manager.  This kicks off
+  // GPS watchPosition + DeviceMotion + DeviceOrientation listeners (shared
+  // with TelemetryLiveTracker / DirectionalTrackingOverlay).  All we do
+  // here is mirror the snapshot into refs the BLE handler reads.
+  useEffect(() => {
+    return phoneSensors.subscribe((snap) => {
+      phoneMotionRef.current = snap.motion;
+      phoneOrientationRef.current = snap.orientation;
+      if (snap.gps) {
+        phonePosRef.current = { lat: snap.gps.lat, lon: snap.gps.lon };
+      }
+      // Track peak motion magnitudes during an active throw so we can use
+      // them when the timer stops.  Reset is handled by startTiming().
+      if (isRunningRef.current && snap.motion) {
+        if (snap.motion.rotMagnitude > peakPhoneRotMagRef.current) {
+          peakPhoneRotMagRef.current = snap.motion.rotMagnitude;
+        }
+        if (snap.motion.impulseG > peakPhoneImpulseRef.current) {
+          peakPhoneImpulseRef.current = snap.motion.impulseG;
+        }
+      }
+    });
+  }, []);
 
   useEffect(() => {
     bleManager.onSyncStatus((status) => {
@@ -213,7 +262,10 @@ export default function DiscActionsDropdown({
         }
       }
 
-      // Calculate RPM from gyroZ (firmware sends deg/s; 1 RPM = 6 deg/s)
+      // Calculate RPM from gyroZ (firmware sends deg/s; 1 RPM = 6 deg/s).
+      // The demo device's IMU is dead so this is almost always 0; the
+      // phone-IMU peak captured during the throw is used as a fallback
+      // when stopTiming() runs.
       const rpm = Math.abs(ping.gyroZ) / 6;
       if (rpm >= 5) setLastRpm(rpm); // noise floor
 
@@ -252,19 +304,43 @@ export default function DiscActionsDropdown({
 
           smoothedDistanceRef.current = smoothedFeet;
           setTrackerDistance(smoothedFeet);
+
+          // ── 2-ft throw-trigger gate ──
+          // Per product requirement: "a throw should be captured if the
+          // gps data in relation to the phone is within a range where a
+          // real throw might happen, i.e distance from device is greater
+          // than say 2ft."  We arm the timer only when calibrated
+          // distance crosses the threshold AND is rising (so a stationary
+          // device sitting 3 ft away on the bag does not trip it).
+          const prevCalibrated = lastCalibratedFeetRef.current;
+          const isRising = smoothedFeet > prevCalibrated + 0.5;
+          lastCalibratedFeetRef.current = smoothedFeet;
+
+          if (!isRunningRef.current) {
+            if (smoothedFeet > THROW_TRIGGER_FEET && isRising) {
+              risingStreakRef.current += 1;
+              if (risingStreakRef.current >= THROW_RISING_SAMPLES) {
+                startTimingRef.current();
+              }
+            } else {
+              risingStreakRef.current = 0;
+            }
+          }
         }
       }
 
-      if (!isRunningRef.current) {
-        startTimingRef.current();
+      // Stream-idle stop: once a throw is in flight, end it when the
+      // pings stop arriving (disc has landed, BLE link broke, etc.).
+      // We intentionally only arm this timer while a throw is active;
+      // pre-throw gaps must NOT auto-stop the (non-existent) throw.
+      if (isRunningRef.current) {
+        if (streamIdleTimerRef.current) {
+          clearTimeout(streamIdleTimerRef.current);
+        }
+        streamIdleTimerRef.current = setTimeout(() => {
+          void stopTimingRef.current(true);
+        }, STREAM_IDLE_STOP_MS);
       }
-
-      if (streamIdleTimerRef.current) {
-        clearTimeout(streamIdleTimerRef.current);
-      }
-      streamIdleTimerRef.current = setTimeout(() => {
-        void stopTimingRef.current(true);
-      }, STREAM_IDLE_STOP_MS);
     });
 
     // Listen for RSSI updates from BLE connection
@@ -272,17 +348,9 @@ export default function DiscActionsDropdown({
       setRssi(rssiValue);
     });
 
-    // Watch phone GPS position for distance calculations
-    let geoWatchId: number | undefined;
-    if ('geolocation' in navigator) {
-      geoWatchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          phonePosRef.current = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-        },
-        undefined,
-        { enableHighAccuracy: true, maximumAge: 2000 },
-      );
-    }
+    // Phone GPS is now provided by the singleton phone-sensor manager
+    // (subscribed in the effect above), so no per-component watchPosition
+    // is needed here.
 
     return () => {
       unsubscribePing();
@@ -291,7 +359,6 @@ export default function DiscActionsDropdown({
         clearTimeout(streamIdleTimerRef.current);
         streamIdleTimerRef.current = null;
       }
-      if (geoWatchId !== undefined) navigator.geolocation.clearWatch(geoWatchId);
     };
   }, []);
 
@@ -411,9 +478,16 @@ export default function DiscActionsDropdown({
 
     bleManager.markThrowStarted();
     rawTrajectoryRef.current = [];
-    distanceBaselineRef.current = null;
-    smoothedDistanceRef.current = null;
+    // NB: do NOT reset distanceBaselineRef here — the baseline was
+    // calibrated while the disc sat at rest near the operator and is what
+    // makes the 2-ft trigger meaningful.  Wiping it would force the next
+    // throw to recalibrate from scratch mid-flight.
     setActiveTrajectory([]);
+
+    // Reset peak phone-IMU captures for this throw.
+    peakPhoneRotMagRef.current = 0;
+    peakPhoneImpulseRef.current = 0;
+    risingStreakRef.current = 0;
 
     setIsRunning(true);
     setJustStopped(false);
@@ -452,6 +526,15 @@ export default function DiscActionsDropdown({
 
     if (trajectory.length > 0) {
       setActiveTrajectory(trajectory);
+    }
+
+    // Phone-IMU fallback for RPM: if the device IMU never produced a real
+    // gyro reading during the throw (lastRpm still 0 because the demo
+    // unit's IMU is dead), use the peak phone rotation-rate magnitude
+    // captured during the flight window.  1 RPM = 6 deg/s.
+    if (lastRpm === 0 && peakPhoneRotMagRef.current > 30) {
+      const phoneRpm = peakPhoneRotMagRef.current / 6;
+      setLastRpm(phoneRpm);
     }
 
     if (finalElapsed > 0.1) {
