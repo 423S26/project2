@@ -391,6 +391,7 @@ class PhoneSensorManager {
     } catch (e) {
       console.warn('[phone-sensors] AbsoluteOrientationSensor unavailable:', e);
     }
+  }
 
   private stop(): void {
     if (typeof window === 'undefined') return;
