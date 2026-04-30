@@ -63,7 +63,16 @@ function calculateRssiDistance(rssi: number): number {
 
 function hasReliableBleFix(ping: Ping | null): boolean {
 	if (!ping) return false;
-	return ping.lat !== 0 && ping.lon !== 0 && ping.sats >= 5 && ping.hdop > 0 && ping.hdop <= 2.5;
+	// The Goku Nano v3.1 firmware doesn't always populate sats/hdop in
+	// every Ping (those fields are optional in the protobuf and depend on
+	// which NMEA sentence the GPS task last parsed).  Gating on them was
+	// hiding genuinely-good fixes from the UI.  Trust the coordinates as
+	// the primary signal and treat sats/hdop as a hard ceiling only when
+	// they're clearly unusable (hdop > 10).
+	if (ping.lat === 0 && ping.lon === 0) return false;
+	if (Math.abs(ping.lat) > 90 || Math.abs(ping.lon) > 180) return false;
+	if (ping.hdop > 10) return false;
+	return true;
 }
 
 const POLL_INTERVAL = 1000; // ms — API fallback poll rate
@@ -384,8 +393,9 @@ export default function LiveTracker({
 			activePing &&
 			activePing.lat !== 0 &&
 			activePing.lon !== 0 &&
-			(activePing.sats == null || activePing.sats >= 5) &&
-			(activePing.hdop == null || (activePing.hdop > 0 && activePing.hdop <= 2.5))
+			Math.abs(activePing.lat) <= 90 &&
+			Math.abs(activePing.lon) <= 180 &&
+			(activePing.hdop == null || activePing.hdop <= 10)
 		);
 	if (userLocation && activePing && canUseGpsDistance) {
 		const meters = haversineMeters(userLocation.lat, userLocation.lon, activePing.lat, activePing.lon);
@@ -488,9 +498,9 @@ export default function LiveTracker({
 										<div>alt: <span className="text-green-300">{lastBlePing.alt.toFixed(1)}m</span></div>
 										<div>speed: <span className="text-green-300">{lastBlePing.speedMps.toFixed(1)}m/s</span></div>
 										<div>heading: <span className="text-green-300">{lastBlePing.heading.toFixed(0)}&deg;</span></div>
-										<div>sats: <span className={`${lastBlePing.sats >= 5 ? 'text-blue-300' : 'text-red-400'}`}>{lastBlePing.sats}</span></div>
-										<div>hdop: <span className={`${lastBlePing.hdop <= 2 ? 'text-blue-300' : lastBlePing.hdop <= 4 ? 'text-yellow-300' : 'text-red-400'}`}>{lastBlePing.hdop.toFixed(2)}</span></div>
-										<div className="text-[10px] text-gray-600">{lastBlePing.sats >= 5 && lastBlePing.hdop <= 2 ? '● FIX OK' : lastBlePing.sats >= 4 ? '◐ WEAK' : '○ NO FIX'}</div>
+										<div>sats: <span className={`${lastBlePing.sats >= 5 ? 'text-blue-300' : lastBlePing.sats >= 3 ? 'text-yellow-300' : 'text-gray-500'}`}>{lastBlePing.sats}</span></div>
+										<div>hdop: <span className={`${lastBlePing.hdop > 0 && lastBlePing.hdop <= 2 ? 'text-blue-300' : lastBlePing.hdop <= 4 ? 'text-yellow-300' : lastBlePing.hdop <= 10 ? 'text-orange-300' : 'text-red-400'}`}>{lastBlePing.hdop.toFixed(2)}</span></div>
+										<div className="text-[10px] text-gray-600">{hasReliableBleFix(lastBlePing) ? (lastBlePing.sats >= 5 && lastBlePing.hdop > 0 && lastBlePing.hdop <= 2 ? '● FIX OK' : '◐ FIX') : '○ NO FIX'}</div>
 									</div>
 								</div>
 

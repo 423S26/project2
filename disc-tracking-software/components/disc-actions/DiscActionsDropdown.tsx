@@ -731,11 +731,12 @@ export default function DiscActionsDropdown({
 }
 
 function hasReliableGpsFix(ping: Ping): boolean {
-  return (
-    ping.lat !== 0 &&
-    ping.lon !== 0 &&
-    ping.sats >= MIN_SATS_FOR_FIX &&
-    ping.hdop > 0 &&
-    ping.hdop <= MAX_HDOP_FOR_FIX
-  );
+  // Trust valid coordinates over auxiliary metadata.  The firmware
+  // doesn't always emit sats/hdop, but when lat/lon are non-zero and
+  // within Earth bounds we have a usable fix and the throw-trigger
+  // distance gate can run.
+  if (ping.lat === 0 && ping.lon === 0) return false;
+  if (Math.abs(ping.lat) > 90 || Math.abs(ping.lon) > 180) return false;
+  if (ping.hdop > MAX_HDOP_FOR_FIX * 4) return false; // wildly bad
+  return true;
 }
