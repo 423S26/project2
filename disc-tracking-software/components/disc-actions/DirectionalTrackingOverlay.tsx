@@ -8,6 +8,7 @@ import {
   usePhoneSensors,
   haversineMeters,
   bearingDegrees,
+  phoneSensors,
 } from '@/lib/phone-sensors';
 
 // ──────────────────────────────────────────────────────────────
@@ -23,6 +24,9 @@ const RSSI_MAX_SCALE             = 2.5;
 const DEGPS_PER_RPM              = 6;
 const RPM_NOISE_FLOOR            = 5;     // both device + phone share this gate
 const FEET_TO_METERS             = 0.3048;
+// GPS speed (m/s) above which we trust the phone's heading-of-travel as a
+// compass fallback.  Below this, GPS heading is null/noisy on most chipsets.
+const GPS_HEADING_MIN_SPEED_MPS  = 0.5;
 
 type Props = {
   isOpen: boolean;
@@ -49,6 +53,12 @@ export default function DirectionalTrackingOverlay({
   const [hasRealData, setHasRealData] = useState(false);
   const [isCalibrated, setIsCalibrated] = useState(false);
   const [filteredRssi, setFilteredRssi] = useState<number | null>(null);
+  // Tracks whether motion + orientation events are flowing.  When false
+  // we surface an explicit "Enable Sensors" button — iOS requires the
+  // permission call to fire from inside a real user-gesture handler, and
+  // Android Chrome occasionally needs the same nudge to start emitting
+  // `deviceorientationabsolute` events on Pixel devices.
+  const [sensorsReady, setSensorsReady] = useState(false);
 
   // The singleton phone-sensor manager already publishes GPS + compass +
   // motion at ~30 Hz, so we just consume it here instead of registering
@@ -80,19 +90,41 @@ export default function DirectionalTrackingOverlay({
   }, [discLat, discLon]);
 
   /**
-   * Returns the current absolute relative bearing (phone→disc minus phone
-   * compass), or null if any input is missing.  Compass falls back to 0
-   * when the device hasn't granted DeviceOrientation permission — in
-   * that case the calibration anchor still produces a stable forward
-   * direction as long as the phone doesn't rotate.
+   * Returns the current absolute relative bearing (phone→disc minus the
+   * phone's facing heading), or null if we don't yet have enough data.
+   *
+   * Heading priority:
+   *   1. Magnetometer compass (best — valid even when stationary).
+   *   2. GPS heading-of-travel (fallback when magnetometer is unavailable
+   *      and the user is walking; null/noisy when stationary).
+   *   3. 0 — final fallback.  The calibration anchor still produces a
+   *      stable forward direction in this case as long as the phone
+   *      doesn't physically rotate after the anchor was captured.
    */
   const computeRawRelative = useCallback((): number | null => {
     const phoneGps = phoneGpsRef.current;
     const discPos = discPosRef.current;
     if (!phoneGps || !discPos) return null;
     const bearing = bearingDegrees(phoneGps.lat, phoneGps.lon, discPos.lat, discPos.lon);
-    const compass = compassRef.current ?? 0;
-    return (bearing - compass + 360) % 360;
+
+    let heading: number | null = compassRef.current;
+    if (heading === null) {
+      // GPS heading-of-travel fallback.  Only trustworthy when the user
+      // is actually moving — stationary GPS heading is reported as null
+      // (or zero) on most Android chipsets.
+      const gpsHeading = phoneGps.heading;
+      const speed = phoneGps.speed;
+      if (
+        typeof gpsHeading === 'number' &&
+        Number.isFinite(gpsHeading) &&
+        typeof speed === 'number' &&
+        speed >= GPS_HEADING_MIN_SPEED_MPS
+      ) {
+        heading = gpsHeading;
+      }
+    }
+    const h = heading ?? 0;
+    return (bearing - h + 360) % 360;
   }, []);
 
   /** User-driven recalibrate: lock the current relative bearing as zero. */
@@ -120,6 +152,23 @@ export default function DirectionalTrackingOverlay({
       setRotation(0);
     }
   }, [isOpen]);
+
+  // Mark sensors ready once either motion or orientation events are
+  // flowing.  Drives visibility of the "Enable Sensors" button.
+  useEffect(() => {
+    if (phoneSnap.motion || phoneSnap.orientation) {
+      setSensorsReady(true);
+    }
+  }, [phoneSnap.motion, phoneSnap.orientation]);
+
+  /** User-gesture handler that requests motion/orientation permission. */
+  const enableSensors = useCallback(async () => {
+    try {
+      await phoneSensors.requestPermission();
+    } catch {
+      /* swallow — sensorsReady will stay false and the button stays visible */
+    }
+  }, []);
 
   useEffect(() => {
     if (!isOpen || rssi === null || rssi === undefined) return;
@@ -321,6 +370,15 @@ export default function DirectionalTrackingOverlay({
 
           {/* Footer */}
           <div className="p-6 border-t border-[#223066] flex flex-col gap-3">
+            {!sensorsReady && (
+              <button
+                onClick={enableSensors}
+                className="w-full py-3 bg-[#54c4c3] hover:bg-[#3daaa9] text-black rounded-2xl transition font-semibold"
+                title="Grants motion + compass permission so the arrow can track phone rotation."
+              >
+                Enable Phone Sensors
+              </button>
+            )}
             <button
               onClick={recalibrate}
               className="w-full py-3 bg-[#223066] hover:bg-[#2c3f7a] text-[#54c4c3] rounded-2xl transition font-medium border border-[#456fb6]/40"
