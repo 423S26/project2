@@ -1,7 +1,7 @@
 // components/disc-actions/DirectionalTrackingOverlay.tsx
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { DistanceUnit } from './types';
 import { Ping } from '@/lib/pb/hardware';
 import {
@@ -10,9 +10,23 @@ import {
   bearingDegrees,
 } from '@/lib/phone-sensors';
 
+// ──────────────────────────────────────────────────────────────
+// Tuning constants
+// ──────────────────────────────────────────────────────────────
+const ARROW_TICK_MS              = 100;   // arrow refresh cadence
+const RSSI_STATIONARY_SPEED_MPS  = 1.0;   // below this we MA-filter RSSI
+const RSSI_MA_WINDOW             = 5;
+const RSSI_NEAR_DBM              = -40;   // close-range anchor for circle scale
+const RSSI_SCALE_PER_DBM         = 0.03;  // px-of-radius per dBm past anchor
+const RSSI_MIN_SCALE             = 1.0;
+const RSSI_MAX_SCALE             = 2.5;
+const DEGPS_PER_RPM              = 6;
+const RPM_NOISE_FLOOR            = 5;     // both device + phone share this gate
+const FEET_TO_METERS             = 0.3048;
+
 type Props = {
   isOpen: boolean;
-  onClose: () => void;
+  onCloseAction: () => void;
   distance: number;
   unit?: DistanceUnit;
   discLat?: number;
@@ -21,10 +35,10 @@ type Props = {
   rssi?: number | null;
 };
 
-export default function DirectionalTrackingOverlay({ 
-  isOpen, 
-  onClose, 
-  distance, 
+export default function DirectionalTrackingOverlay({
+  isOpen,
+  onCloseAction,
+  distance,
   unit = 'feet',
   discLat,
   discLon,
@@ -33,6 +47,7 @@ export default function DirectionalTrackingOverlay({
 }: Props) {
   const [rotation, setRotation] = useState(0);
   const [hasRealData, setHasRealData] = useState(false);
+  const [isCalibrated, setIsCalibrated] = useState(false);
   const [filteredRssi, setFilteredRssi] = useState<number | null>(null);
 
   // The singleton phone-sensor manager already publishes GPS + compass +
@@ -42,19 +57,83 @@ export default function DirectionalTrackingOverlay({
   const phoneSnap = usePhoneSensors();
   const rssiDataQueueRef = useRef<number[]>([]);
 
+  // ── Calibration anchor ───────────────────────────────────────
+  // The user opens this overlay with the disc in front of them, so the
+  // first valid (phone GPS + disc GPS + compass) sample defines the
+  // "forward / 0°" reference.  Every subsequent rotation is rendered
+  // relative to that anchor, which means the arrow starts at the top
+  // and tracks accurately even when the phone's compass is uncalibrated
+  // (a common Web Bluetooth pain point).
+  const calibrationOffsetRef = useRef<number | null>(null);
+
+  // Latest inputs mirrored into refs so the steady-cadence ticker reads
+  // fresh values without re-binding the interval every frame.
+  const phoneGpsRef = useRef(phoneSnap.gps);
+  const compassRef = useRef(phoneSnap.orientation?.compass ?? null);
+  const discPosRef = useRef<{ lat: number; lon: number } | null>(null);
+  useEffect(() => { phoneGpsRef.current = phoneSnap.gps; }, [phoneSnap.gps]);
+  useEffect(() => { compassRef.current = phoneSnap.orientation?.compass ?? null; }, [phoneSnap.orientation]);
+  useEffect(() => {
+    discPosRef.current = (discLat != null && discLon != null && (discLat !== 0 || discLon !== 0))
+      ? { lat: discLat, lon: discLon }
+      : null;
+  }, [discLat, discLon]);
+
+  /**
+   * Returns the current absolute relative bearing (phone→disc minus phone
+   * compass), or null if any input is missing.  Compass falls back to 0
+   * when the device hasn't granted DeviceOrientation permission — in
+   * that case the calibration anchor still produces a stable forward
+   * direction as long as the phone doesn't rotate.
+   */
+  const computeRawRelative = useCallback((): number | null => {
+    const phoneGps = phoneGpsRef.current;
+    const discPos = discPosRef.current;
+    if (!phoneGps || !discPos) return null;
+    const bearing = bearingDegrees(phoneGps.lat, phoneGps.lon, discPos.lat, discPos.lon);
+    const compass = compassRef.current ?? 0;
+    return (bearing - compass + 360) % 360;
+  }, []);
+
+  /** User-driven recalibrate: lock the current relative bearing as zero. */
+  const recalibrate = useCallback(() => {
+    const rel = computeRawRelative();
+    if (rel !== null) {
+      calibrationOffsetRef.current = rel;
+      setIsCalibrated(true);
+      setRotation(0);
+    } else {
+      // No valid sample yet — clear so the next valid one becomes zero.
+      calibrationOffsetRef.current = null;
+      setIsCalibrated(false);
+      setRotation(0);
+    }
+  }, [computeRawRelative]);
+
+  // Reset calibration whenever the overlay is closed so a fresh open
+  // re-anchors on the new device-in-front pose.
+  useEffect(() => {
+    if (!isOpen) {
+      calibrationOffsetRef.current = null;
+      setIsCalibrated(false);
+      setHasRealData(false);
+      setRotation(0);
+    }
+  }, [isOpen]);
+
   useEffect(() => {
     if (!isOpen || rssi === null || rssi === undefined) return;
 
     // Moving Average Filter if stationary
     const speed = currentPing ? currentPing.speedMps : 0;
-    const isStationary = speed <= 1.0;
+    const isStationary = speed <= RSSI_STATIONARY_SPEED_MPS;
 
     if (isStationary) {
       rssiDataQueueRef.current.push(rssi);
-      if (rssiDataQueueRef.current.length > 5) {
+      if (rssiDataQueueRef.current.length > RSSI_MA_WINDOW) {
         rssiDataQueueRef.current.shift();
       }
-      
+
       const sum = rssiDataQueueRef.current.reduce((a, b) => a + b, 0);
       setFilteredRssi(sum / rssiDataQueueRef.current.length);
     } else {
@@ -67,48 +146,53 @@ export default function DirectionalTrackingOverlay({
   useEffect(() => {
     if (!isOpen) return;
 
-    const hasDiscPosition = discLat != null && discLon != null && (discLat !== 0 || discLon !== 0);
-
-    // Recompute the arrow rotation at a steady cadence.  As soon as both
-    // phone and disc have a fix the arrow latches onto the real bearing;
-    // until then we gently spin so the user knows we're still searching.
     const tickInterval = setInterval(() => {
-      const phoneGps = phoneSnap.gps;
-      const compass = phoneSnap.orientation?.compass ?? 0;
-      if (hasDiscPosition && phoneGps) {
-        const bearing = bearingDegrees(
-          phoneGps.lat,
-          phoneGps.lon,
-          discLat!,
-          discLon!,
-        );
-        setRotation((bearing - compass + 360) % 360);
-        setHasRealData(true);
-      } else {
-        setRotation((prev) => (prev + 5) % 360);
+      const rel = computeRawRelative();
+      if (rel === null) {
+        // No valid fix yet — keep the arrow pinned forward (top) instead
+        // of spinning, so the visual matches the "device assumed in
+        // front" calibration contract.
+        return;
       }
-    }, 100);
+      // First valid sample becomes the zero anchor.
+      if (calibrationOffsetRef.current === null) {
+        calibrationOffsetRef.current = rel;
+        setIsCalibrated(true);
+      }
+      const offset = calibrationOffsetRef.current;
+      const display = ((rel - offset) + 360) % 360;
+      setRotation(display);
+      setHasRealData(true);
+    }, ARROW_TICK_MS);
 
     return () => clearInterval(tickInterval);
-  }, [isOpen, discLat, discLon, phoneSnap.gps, phoneSnap.orientation]);
+  }, [isOpen, computeRawRelative]);
 
-  const displayedDistance = unit === 'meters' 
-    ? (distance * 0.3048).toFixed(1) 
+  const displayedDistance = unit === 'meters'
+    ? (distance * FEET_TO_METERS).toFixed(1)
     : distance.toFixed(0);
-  
+
   const label = unit === 'meters' ? 'm' : 'ft';
 
-  // Calculate RSSI mapping: e.g. -40 (close) -> scale 1.0, -100 (far) -> scale 2.5
-  // Used to visualize uncertainty/probability circle
-  const rssiScale = filteredRssi !== null ? Math.min(2.5, Math.max(1.0, (-filteredRssi - 40) * 0.03 + 1)) : 1;
+  // Calculate RSSI mapping: at RSSI_NEAR_DBM (close) -> RSSI_MIN_SCALE,
+  // weaker signal -> larger uncertainty radius up to RSSI_MAX_SCALE.
+  const rssiScale = filteredRssi !== null
+    ? Math.min(
+        RSSI_MAX_SCALE,
+        Math.max(
+          RSSI_MIN_SCALE,
+          (-filteredRssi - -RSSI_NEAR_DBM) * RSSI_SCALE_PER_DBM + RSSI_MIN_SCALE,
+        ),
+      )
+    : 1;
 
   // IMU Rotation Logic.  The demo device's onboard IMU is dead, so the
   // BLE gyroZ is essentially zero — fall back to the phone's rotation
   // rate magnitude as a "how violently is the rig moving" proxy.
-  const deviceRpm = currentPing ? Math.abs(currentPing.gyroZ) / 6 : 0;
-  const phoneRpm = phoneSnap.motion ? phoneSnap.motion.rotMagnitude / 6 : 0;
-  const rpm = deviceRpm > 5 ? deviceRpm : phoneRpm;
-  const isSpinning = rpm > 5;
+  const deviceRpm = currentPing ? Math.abs(currentPing.gyroZ) / DEGPS_PER_RPM : 0;
+  const phoneRpm = phoneSnap.motion ? phoneSnap.motion.rotMagnitude / DEGPS_PER_RPM : 0;
+  const rpm = deviceRpm > RPM_NOISE_FLOOR ? deviceRpm : phoneRpm;
+  const isSpinning = rpm > RPM_NOISE_FLOOR;
   const discTiltClass = isSpinning ? "animate-spin-fast scale-105" : "";
 
   // Live drift indicator: distance between the phone and the disc, plus
@@ -127,7 +211,7 @@ export default function DirectionalTrackingOverlay({
     <>
       <div 
         className="fixed inset-0 bg-black/90 backdrop-blur-xl z-70" 
-        onClick={onClose} 
+        onClick={onCloseAction} 
       />
 
       <div className="fixed inset-0 z-80 flex items-center justify-center p-4">
@@ -206,7 +290,11 @@ export default function DirectionalTrackingOverlay({
             </div>
 
             <p className="text-center text-white/70 mt-20 text-lg font-medium">
-              {isSpinning ? `Spinning at ${Math.round(rpm)} RPM` : "Arrow leads to disc"}
+              {isSpinning
+                ? `Spinning at ${Math.round(rpm)} RPM`
+                : hasRealData
+                  ? (isCalibrated ? 'Arrow leads to disc' : 'Calibrating…')
+                  : 'Searching for disc fix…'}
             </p>
             {filteredRssi !== null && (
               <p className="text-center text-[#ff4e50]/80 mt-1 text-sm">
@@ -232,9 +320,16 @@ export default function DirectionalTrackingOverlay({
           </div>
 
           {/* Footer */}
-          <div className="p-6 border-t border-[#223066]">
+          <div className="p-6 border-t border-[#223066] flex flex-col gap-3">
             <button
-              onClick={onClose}
+              onClick={recalibrate}
+              className="w-full py-3 bg-[#223066] hover:bg-[#2c3f7a] text-[#54c4c3] rounded-2xl transition font-medium border border-[#456fb6]/40"
+              title="Lock the current direction as 'forward' (device in front of phone)."
+            >
+              Recalibrate Forward
+            </button>
+            <button
+              onClick={onCloseAction}
               className="w-full py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-2xl transition font-medium"
             >
               Close Directional View

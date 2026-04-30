@@ -12,19 +12,19 @@ import { useState, useEffect, useRef } from 'react';
 type Props = {
   isRunning: boolean;
   elapsedTime: number;
-  setElapsedTime: React.Dispatch<React.SetStateAction<number>>;
-  onStart: () => void;
-  onStop: () => void;
-  onReset: () => void;
+  setElapsedTimeAction: React.Dispatch<React.SetStateAction<number>>;
+  onStartAction: () => void;
+  onStopAction: () => void;
+  onResetAction: () => void;
 };
 
 export default function Stopwatch({
   isRunning,
   elapsedTime,
-  setElapsedTime,
-  onStart,
-  onStop,
-  onReset,
+  setElapsedTimeAction,
+  onStartAction,
+  onStopAction,
+  onResetAction,
 }: Props) {
   const [delaySeconds, setDelaySeconds] = useState<number>(0); // User-selected delay (0–10s)
   const [remainingDelay, setRemainingDelay] = useState<number | null>(null);
@@ -69,18 +69,18 @@ export default function Stopwatch({
 
       // Only update real elapsed time after delay ends
       if (timeInSeconds >= delaySeconds) {
-        setElapsedTime(timeInSeconds - delaySeconds);
+        setElapsedTimeAction(timeInSeconds - delaySeconds);
       }
     }, 100); // 100ms updates for smooth display
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isRunning, delaySeconds, setElapsedTime]);
+  }, [isRunning, delaySeconds, setElapsedTimeAction]);
 
   const handleStart = () => {
     if (isRunning) return;
-    onStart();
+    onStartAction();
   };
 
   const handleStop = () => {
@@ -91,15 +91,15 @@ export default function Stopwatch({
     startTimeRef.current = null;
     setRemainingDelay(null);
     setDisplayTime(0);
-    onStop();
+    onStopAction();
   };
 
   const handleClear = () => {
     handleStop();
-    setElapsedTime(0);
+    setElapsedTimeAction(0);
     setDisplayTime(0);
     setHasBeenStarted(false); // Allow Start button to reappear
-    onReset();
+    onResetAction();
   };
 
   const isInDelayPhase = displayTime < 0;

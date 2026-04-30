@@ -51,6 +51,26 @@ const THROW_TRIGGER_FEET = 2;
 // window before we commit to starting the throw timer, otherwise a single
 // noisy GPS jump would spuriously start a throw.
 const THROW_RISING_SAMPLES = 2;
+// Minimum frame-over-frame increase (feet) for a sample to count as 'rising'.
+const RISING_DELTA_FEET = 0.5;
+// EMA weight applied to fresh raw distance when calibrating the resting baseline.
+const BASELINE_EMA_ALPHA = 0.1;
+// Throws shorter than this are treated as accidental taps and never shown.
+const MIN_THROW_SECONDS = 0.1;
+// UI elapsed-timer tick interval.
+const TIMER_TICK_MS = 100;
+// Device-side gyro RPM noise floor (deg/s ÷ 6 = RPM).
+const DEVICE_RPM_NOISE_FLOOR_DEGPS = 5;
+// Phone-IMU rotation magnitude required before we trust it as an RPM fallback
+// (deg/s).  Below this, the phone is just being held — not spinning the disc.
+const PHONE_RPM_FALLBACK_GATE_DEGPS = 30;
+// Conversion: deg/s -> RPM.
+const DEGPS_PER_RPM = 6;
+// Hard reject any GPS fix whose HDOP exceeds MAX_HDOP_FOR_FIX by this multiple.
+const HDOP_HARD_REJECT_MULTIPLIER = 4;
+// Form defaults for AddDiscPopup.
+const DEFAULT_DISC_WEIGHT_GRAMS = 175;
+const DEFAULT_DISC_COLOR = '#000000';
 
 /** Calculate distance in feet between two GPS coordinates using haversine formula */
 function haversineDistanceFeet(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -142,8 +162,8 @@ export default function DiscActionsDropdown({
   const [showAddPopup, setShowAddPopup] = useState(false);
   const [discName, setDiscName] = useState('');
   const [discType, setDiscType] = useState('');
-  const [weight, setWeight] = useState(175);
-  const [color, setColor] = useState('#000000');
+  const [weight, setWeight] = useState(DEFAULT_DISC_WEIGHT_GRAMS);
+  const [color, setColor] = useState(DEFAULT_DISC_COLOR);
   const [showDiscList, setShowDiscList] = useState(false);
   const [discs, setDiscs] = useState<Disc[]>(currentDiscs);
   const [isLoading, setIsLoading] = useState(false);
@@ -266,8 +286,8 @@ export default function DiscActionsDropdown({
       // The demo device's IMU is dead so this is almost always 0; the
       // phone-IMU peak captured during the throw is used as a fallback
       // when stopTiming() runs.
-      const rpm = Math.abs(ping.gyroZ) / 6;
-      if (rpm >= 5) setLastRpm(rpm); // noise floor
+      const rpm = Math.abs(ping.gyroZ) / DEGPS_PER_RPM;
+      if (rpm >= DEVICE_RPM_NOISE_FLOOR_DEGPS / DEGPS_PER_RPM) setLastRpm(rpm);
 
       // Update battery level from firmware
       if (ping.battPct > 0) {
@@ -288,7 +308,7 @@ export default function DiscActionsDropdown({
           if (isLikelyStationary) {
             distanceBaselineRef.current = distanceBaselineRef.current === null
               ? rawDistFeet
-              : distanceBaselineRef.current * 0.9 + rawDistFeet * 0.1;
+              : distanceBaselineRef.current * (1 - BASELINE_EMA_ALPHA) + rawDistFeet * BASELINE_EMA_ALPHA;
           }
 
           const baselineFeet = distanceBaselineRef.current ?? 0;
@@ -313,7 +333,7 @@ export default function DiscActionsDropdown({
           // distance crosses the threshold AND is rising (so a stationary
           // device sitting 3 ft away on the bag does not trip it).
           const prevCalibrated = lastCalibratedFeetRef.current;
-          const isRising = smoothedFeet > prevCalibrated + 0.5;
+          const isRising = smoothedFeet > prevCalibrated + RISING_DELTA_FEET;
           lastCalibratedFeetRef.current = smoothedFeet;
 
           if (!isRunningRef.current) {
@@ -441,8 +461,8 @@ export default function DiscActionsDropdown({
     setShowAddPopup(true);
     setDiscName('');
     setDiscType('');
-    setWeight(175);
-    setColor('#000000');
+    setWeight(DEFAULT_DISC_WEIGHT_GRAMS);
+    setColor(DEFAULT_DISC_COLOR);
   };
 
   const handleAddDisc = async () => {
@@ -494,7 +514,7 @@ export default function DiscActionsDropdown({
     const start = Date.now() - elapsedTime * 1000;
     timerRef.current = setInterval(() => {
       setElapsedTime((Date.now() - start) / 1000);
-    }, 100);
+    }, TIMER_TICK_MS);
   };
 
   const stopTiming = async (forceSave = false) => {
@@ -532,12 +552,12 @@ export default function DiscActionsDropdown({
     // gyro reading during the throw (lastRpm still 0 because the demo
     // unit's IMU is dead), use the peak phone rotation-rate magnitude
     // captured during the flight window.  1 RPM = 6 deg/s.
-    if (lastRpm === 0 && peakPhoneRotMagRef.current > 30) {
-      const phoneRpm = peakPhoneRotMagRef.current / 6;
+    if (lastRpm === 0 && peakPhoneRotMagRef.current > PHONE_RPM_FALLBACK_GATE_DEGPS) {
+      const phoneRpm = peakPhoneRotMagRef.current / DEGPS_PER_RPM;
       setLastRpm(phoneRpm);
     }
 
-    if (finalElapsed > 0.1) {
+    if (finalElapsed > MIN_THROW_SECONDS) {
       setShowThrowResults(true);
 
       // Auto-save at end-of-stream to guarantee throw bundling for statistics.
@@ -674,18 +694,18 @@ export default function DiscActionsDropdown({
             <Stopwatch
               isRunning={isRunning}
               elapsedTime={elapsedTime}
-              setElapsedTime={setElapsedTime}
-              onStart={startTiming}
-              onStop={stopTiming}
-              onReset={resetTiming}
+              setElapsedTimeAction={setElapsedTime}
+              onStartAction={startTiming}
+              onStopAction={stopTiming}
+              onResetAction={resetTiming}
             />
           ) : (
             <Accelerometer
               isRunning={isRunning}
               elapsedTime={elapsedTime}
-              onStart={startTiming}
-              onStop={stopTiming}
-              onReset={resetTiming}
+              onStartAction={startTiming}
+              onStopAction={stopTiming}
+              onResetAction={resetTiming}
             />
           )}
           </div>
@@ -706,8 +726,8 @@ export default function DiscActionsDropdown({
       {showRemoveConfirm && (
         <RemoveConfirmPopup
           discName={selectedDisc?.name}
-          onConfirm={confirmRemove}
-          onCancel={cancelRemove}
+          onConfirmAction={confirmRemove}
+          onCancelAction={cancelRemove}
         />
       )}
 
@@ -737,6 +757,6 @@ function hasReliableGpsFix(ping: Ping): boolean {
   // distance gate can run.
   if (ping.lat === 0 && ping.lon === 0) return false;
   if (Math.abs(ping.lat) > 90 || Math.abs(ping.lon) > 180) return false;
-  if (ping.hdop > MAX_HDOP_FOR_FIX * 4) return false; // wildly bad
+  if (ping.hdop > MAX_HDOP_FOR_FIX * HDOP_HARD_REJECT_MULTIPLIER) return false; // wildly bad
   return true;
 }

@@ -6,17 +6,17 @@ import { useState, useEffect, useRef } from 'react';
 type Props = {
   isRunning: boolean;
   elapsedTime: number;
-  onStart: () => void;
-  onStop: () => void;
-  onReset: () => void;
+  onStartAction: () => void;
+  onStopAction: () => void;
+  onResetAction: () => void;
 };
 
 export default function Accelerometer({
   isRunning,
   elapsedTime,
-  onStart,
-  onStop,
-  onReset,
+  onStartAction,
+  onStopAction,
+  onResetAction: _onResetAction,
 }: Props) {
   const [speed, setSpeed] = useState<number>(0);
   const velocityRef = useRef<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
@@ -68,9 +68,9 @@ export default function Accelerometer({
   // Auto-start timer when speed exceeds 10 mph (placeholder – real data will trigger this)
   useEffect(() => {
     if (speed > 10 && !isRunning) {
-      onStart();
+      onStartAction();
     }
-  }, [speed, isRunning, onStart]);
+  }, [speed, isRunning, onStartAction]);
 
   return (
     <div className="bg-[#190f2A]/80 backdrop-blur border border-[#456fb6]/40 rounded-xl p-5 shadow-lg">
@@ -98,7 +98,7 @@ export default function Accelerometer({
       <div className="flex justify-center gap-4">
         {isRunning && (
           <button
-            onClick={onStop}
+            onClick={onStopAction}
             className="flex-1 bg-red-600 text-white font-medium py-3 px-6 rounded-lg hover:bg-red-700 transition touch-manipulation"
           >
             Stop

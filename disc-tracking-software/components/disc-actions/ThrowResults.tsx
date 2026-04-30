@@ -15,11 +15,31 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { DistanceUnit } from './types';
 
 // ──────────────────────────────────────────────────────────────
-// ThrowResults – displays flight path chart and key metrics after a throw
-// Backend integration points:
-//   - Replace fake metrics (RPM, avg height) with real data
-//   - Send throw data to server on auto-save or manual save
+// ThrowResults – displays flight path chart and key metrics after a throw.
+// All metrics (distance, velocity, RPM, average height) are derived from
+// the live trajectory + telemetry; only the synthetic chart fallback uses
+// approximations, and those are tagged 'estimated path' in the UI.
 // ──────────────────────────────────────────────────────────────
+
+// Synthetic-fallback shaping (only used when no real GPS samples were
+// captured for the throw — e.g. very short throws or BLE drop-outs).
+const SYNTH_PEAK_HEIGHT_RATIO = 0.18;
+const SYNTH_FINAL_DRIFT_RATIO = 0.12;
+const SYNTH_PATH_STEPS        = 32;
+// Top-down chart deviation domain padding so the line never hugs an edge.
+const DEVIATION_PAD_RATIO     = 1.2;
+const DEVIATION_MIN_SPAN_FEET = 5;
+const DEVIATION_MIN_SPAN_FRAC = 0.1; // of total distance
+// Side-profile chart altitude padding.
+const HEIGHT_PAD_RATIO        = 1.25;
+const HEIGHT_MIN_SPAN_FEET    = 5;
+const HEIGHT_MIN_SPAN_FRAC    = 0.1; // of total distance
+// Distance-axis padding for both charts.
+const DISTANCE_PAD_RATIO      = 1.05;
+// Tooltip threshold for collapsing tiny deviations to 'on center line'.
+const CENTER_LINE_TOLERANCE   = 0.5;
+// Conversion factor: feet → meters.
+const FEET_TO_METERS          = 0.3048;
 
 type Props = {
   distance: number;          // in feet (from tracker)
@@ -33,12 +53,11 @@ type Props = {
 export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, trajectoryData }: Props) {
   const { settings } = useSettings();
 
-  const convert = (val: number) => (unit === 'meters' ? val * 0.3048 : val);
+  const convert = (val: number) => (unit === 'meters' ? val * FEET_TO_METERS : val);
   const label = unit === 'meters' ? 'm' : 'ft';
 
   const displayedDistance = convert(distance).toFixed(1);
   const displayedVelocity = time > 0 ? (convert(distance) / time).toFixed(1) : '0.0';
-  const displayedAvgHeight = (40 * 0.65 * (unit === 'meters' ? 0.3048 : 1)).toFixed(1);
 
   // Use real RPM from gyroscope telemetry — no fake estimates
   const displayRpm = rpm && rpm > 0 ? Math.round(rpm) : 0;
@@ -72,9 +91,9 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, t
     // Synthetic parabolic flight + gentle right-fade as a last-resort
     // visual when no telemetry samples were captured for this throw.
     const totalDistance = convert(distance);
-    const peakHeight = totalDistance * 0.18;
-    const finalDrift = totalDistance * 0.12;
-    const steps = 32;
+    const peakHeight = totalDistance * SYNTH_PEAK_HEIGHT_RATIO;
+    const finalDrift = totalDistance * SYNTH_FINAL_DRIFT_RATIO;
+    const steps = SYNTH_PATH_STEPS;
     const points: Array<{ idx: number; distance: number; deviation: number; height: number }> = [];
     for (let i = 0; i <= steps; i++) {
       const p = i / steps;
@@ -95,15 +114,35 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, t
 
   // Symmetric deviation domain so 'center line' sits in the middle of
   // the top-down chart regardless of whether the throw drifted left or
-  // right.  Pad by 20% so the line never hugs an edge.
+  // right.
   const maxDeviation = chartData.reduce((m, p) => Math.max(m, Math.abs(p.deviation)), 0);
   const devDomain: [number, number] = (() => {
-    const span = Math.max(maxDeviation * 1.2, totalDistance * 0.1, 5);
+    const span = Math.max(
+      maxDeviation * DEVIATION_PAD_RATIO,
+      totalDistance * DEVIATION_MIN_SPAN_FRAC,
+      DEVIATION_MIN_SPAN_FEET,
+    );
     return [-span, span];
   })();
 
   const peakHeight = chartData.reduce((m, p) => Math.max(m, p.height), 0);
-  const heightDomain: [number, number] = [0, Math.max(peakHeight * 1.25, totalDistance * 0.1, 5)];
+  const heightDomain: [number, number] = [
+    0,
+    Math.max(
+      peakHeight * HEIGHT_PAD_RATIO,
+      totalDistance * HEIGHT_MIN_SPAN_FRAC,
+      HEIGHT_MIN_SPAN_FEET,
+    ),
+  ];
+
+  // Mean altitude across the flight — derived from the same chart data
+  // so the metric tile and the side-profile chart always agree.  When
+  // there's no real trajectory yet the synthetic parabola provides a
+  // reasonable approximation; when there is, this is the true average.
+  const displayedAvgHeight = (chartData.length > 0
+    ? chartData.reduce((s, p) => s + p.height, 0) / chartData.length
+    : 0
+  ).toFixed(1);
 
   return (
     <div className="space-y-6">
@@ -126,7 +165,7 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, t
               domain={devDomain}
               stroke="#aaa"
               tick={{ fill: '#ccc', fontSize: 11 }}
-              tickFormatter={(v: number) => (Math.abs(v) < 0.5 ? '0' : v.toFixed(0))}
+              tickFormatter={(v: number) => (Math.abs(v) < CENTER_LINE_TOLERANCE ? '0' : v.toFixed(0))}
               label={{
                 value: `← left   deviation (${label})   right →`,
                 position: 'insideBottom',
@@ -138,7 +177,7 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, t
             <YAxis
               type="number"
               dataKey="distance"
-              domain={[0, Math.max(totalDistance * 1.05, 1)]}
+              domain={[0, Math.max(totalDistance * DISTANCE_PAD_RATIO, 1)]}
               stroke="#aaa"
               tick={{ fill: '#ccc', fontSize: 11 }}
               label={{
@@ -164,7 +203,7 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, t
               labelFormatter={(label2: unknown) => {
                 const v = Number(label2);
                 if (Number.isNaN(v)) return '';
-                if (Math.abs(v) < 0.5) return 'on center line';
+                if (Math.abs(v) < CENTER_LINE_TOLERANCE) return 'on center line';
                 return v > 0 ? `${v.toFixed(1)} ${label} right` : `${Math.abs(v).toFixed(1)} ${label} left`;
               }}
             />
@@ -199,7 +238,7 @@ export default function ThrowResults({ distance, time, unit, onSaveThrow, rpm, t
             <XAxis
               type="number"
               dataKey="distance"
-              domain={[0, Math.max(totalDistance * 1.05, 1)]}
+              domain={[0, Math.max(totalDistance * DISTANCE_PAD_RATIO, 1)]}
               stroke="#aaa"
               tick={{ fill: '#ccc', fontSize: 11 }}
               label={{

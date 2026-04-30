@@ -457,27 +457,27 @@ export class BLEManager {
       const chunk = new Uint8Array(target.value.buffer, target.value.byteOffset, target.value.byteLength);
       if (chunk.length < 2) return;
 
-      // ── Fast path: unframed whole-Ping notification ────────────────
-      //
-      // The current firmware actually delivers one complete protobuf
-      // Ping per BLE notification (no chunk header).  If we treat the
-      // first two bytes as `(seq, hdr)` we end up with idx=0, isLast=0
-      // forever and the assembler discards every frame on the next
-      // notification ("Resyncing assembler: prev seq=N (1 chunks)" log
-      // spam).  Probe the raw payload first; if it parses as a valid
-      // Ping, dispatch it directly and skip the assembler entirely.
-      if (this.tryDecodeWholeFrame(chunk)) {
-        this.chunkSeq     = -1;
-        this.chunkBuf     = [];
-        this.chunkNextIdx = 0;
-        return;
-      }
-
       const seq    = chunk[0];
       const hdr    = chunk[1];
       const isLast = (hdr & 0x80) !== 0;
       const idx    = hdr & 0x7F;
       const data   = chunk.subarray(2);
+
+      // ── Fast path: single-chunk frame (idx=0 && isLast) ─────────────
+      //
+      // Only probe for an unframed whole-Ping when the chunk header
+      // itself claims this is a complete frame.  Probing every notification
+      // (including the FIRST chunk of a multi-chunk Ping, which contains
+      // only ~18 bytes of payload) lets partial protobuf decodes slip
+      // through with all-zero GPS/IMU because random bytes happen to
+      // satisfy `timestamp > 0`.  This was producing the lat=lon=0,
+      // sats=0 frames the user reported.
+      if (idx === 0 && isLast && this.chunkBuf.length === 0 && this.tryDecodeWholeFrame(data)) {
+        this.chunkSeq     = -1;
+        this.chunkBuf     = [];
+        this.chunkNextIdx = 0;
+        return;
+      }
 
       // New Ping started — reset assembler.
       if (seq !== this.chunkSeq) {
@@ -742,9 +742,26 @@ export class BLEManager {
   }
 
   private isLikelyCompletePing(ping: Ping): boolean {
-    // Firmware should always set timestamp. Using it as a guard prevents
-    // partial fragment decodes from propagating null/default telemetry values.
-    return Number.isFinite(ping.timestamp) && ping.timestamp > 0;
+    // A full Ping decode must have BOTH the firmware-stamped timestamp
+    // AND the device id populated.  A partial-chunk decode that happens
+    // to satisfy `timestamp > 0` (because random bytes parsed as a
+    // varint) won't have both, so this check filters out the all-zero
+    // GPS/IMU frames that were leaking through the previous gate.
+    if (!Number.isFinite(ping.timestamp) || ping.timestamp <= 0) return false;
+    if (!ping.deviceId || ping.deviceId.length === 0) return false;
+
+    // At least one of the major sensor groups must report data.  GPS is
+    // 0/0 only when there is genuinely no fix, in which case we still
+    // expect non-zero IMU magnitudes (the disc has gravity = ~1g) or a
+    // non-zero battery percentage.  All-zero across every group is the
+    // signature of a partial protobuf decode and should be dropped.
+    const hasGps = ping.lat !== 0 || ping.lon !== 0 || ping.sats > 0 || ping.hdop > 0 || ping.alt !== 0;
+    const hasImu =
+      ping.accelX !== 0 || ping.accelY !== 0 || ping.accelZ !== 0 ||
+      ping.gyroX  !== 0 || ping.gyroY  !== 0 || ping.gyroZ  !== 0 ||
+      ping.tempC  !== 0;
+    const hasBatt = ping.battPct > 0;
+    return hasGps || hasImu || hasBatt;
   }
 
   /**

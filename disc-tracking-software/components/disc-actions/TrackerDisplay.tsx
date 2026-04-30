@@ -66,7 +66,7 @@ export default function TrackerDisplay({ distance, unit, batteryLevel, discLat, 
       {/* Directional Tracking Overlay */}
       <DirectionalTrackingOverlay
         isOpen={showDirectionalOverlay}
-        onClose={() => setShowDirectionalOverlay(false)}
+        onCloseAction={() => setShowDirectionalOverlay(false)}
         distance={distance}
         unit={unit}
         discLat={discLat}
