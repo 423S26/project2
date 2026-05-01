@@ -39,6 +39,8 @@ export default function About() {
               <img
                 src="/jaden-github.jpg"
                 alt="Profile 1"
+                loading="lazy"
+                decoding="async"
                 className="w-full h-full object-cover"
               />
             </a>
@@ -48,6 +50,8 @@ export default function About() {
               <img
                 src="/nathan-github.jpg"
                 alt="Profile 2"
+                loading="lazy"
+                decoding="async"
                 className="w-full h-full object-cover"
               />
             </a>

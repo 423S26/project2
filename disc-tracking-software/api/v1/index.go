@@ -320,11 +320,21 @@ func processSinglePing(db *sql.DB, userID string, ping *pb.Ping) error {
 
 	wobble := math.Abs(float64(ping.AccelZ) - 1.0)
 
-	hasGpsFix := ping.GetLat() != 0 || ping.GetLon() != 0
+	// Require a *complete* GPS fix to persist coordinates: both lat and lon
+	// must be non-zero, within physical bounds, and lon must not look like
+	// the partial-fix garbage (|lat|>1 with |lon|<1) we have observed when
+	// the GPS reports lat decoded but lon still defaulted.  This prevents
+	// the API fallback from later returning bogus coordinates that wreck
+	// the live distance UI.
+	pingLat := ping.GetLat()
+	pingLon := ping.GetLon()
+	hasGpsFix := pingLat != 0 && pingLon != 0 &&
+		math.Abs(pingLat) <= 90 && math.Abs(pingLon) <= 180 &&
+		!(math.Abs(pingLat) > 1 && math.Abs(pingLon) < 1)
 	var lat, lon, alt sql.NullFloat64
 	if hasGpsFix {
-		lat = sql.NullFloat64{Float64: ping.GetLat(), Valid: true}
-		lon = sql.NullFloat64{Float64: ping.GetLon(), Valid: true}
+		lat = sql.NullFloat64{Float64: pingLat, Valid: true}
+		lon = sql.NullFloat64{Float64: pingLon, Valid: true}
 		alt = sql.NullFloat64{Float64: ping.GetAlt(), Valid: true}
 	}
 

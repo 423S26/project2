@@ -300,11 +300,17 @@ export default function LiveTracker({
 				const latestUpdate = telemetryUpdates[telemetryUpdates.length - 1];
 				// Publish to the shared disc-position store as an API-source
 				// fix.  The store guards against clobbering a fresher BLE fix.
+				// Reject the partial-fix garbage signature where lat decoded
+				// correctly but lon is still near-zero (e.g. the historical
+				// `lon=0.05` rows we have observed in the DB).  Real outdoor
+				// fixes have |lon| >> 1 unless the user is literally standing
+				// on the prime meridian.
 				const latLonOk =
 					latestUpdate.lat !== 0 &&
 					latestUpdate.lon !== 0 &&
 					Math.abs(latestUpdate.lat) <= 90 &&
 					Math.abs(latestUpdate.lon) <= 180 &&
+					!(Math.abs(latestUpdate.lat) > 1 && Math.abs(latestUpdate.lon) < 1) &&
 					(latestUpdate.hdop == null || latestUpdate.hdop <= 10);
 				if (latLonOk) {
 					discPositionStore.publish(latestUpdate.lat, latestUpdate.lon, 'api');
