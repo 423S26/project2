@@ -111,6 +111,8 @@ UML: https://lucid.app/lucidchart/de78a944-3a2f-447c-8bc5-a37025b7ed87/edit?view
 
 Sprint/Portfolio Backlogs: https://docs.google.com/document/d/16ZOI3ZHT498dK0WAmcIgPP1SnBpY4iGB3s9eKXZxDik/edit?usp=sharing
 
+DEMO VIDEO: https://www.dropbox.com/scl/fi/eixjkah893l7fxsfa6vyp/Project-2-Demo.mp4?rlkey=9uw4on5qlo9b5ofjlkft8zcsw&st=f4gnhcad&dl=0
+
 ## Tech Stack
 __________________________________________________
 
