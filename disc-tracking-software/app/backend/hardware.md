@@ -1,1 +1,0 @@
-This is the main directory for backend stuff and hardware connectivity

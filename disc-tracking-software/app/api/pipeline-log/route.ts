@@ -33,6 +33,7 @@ const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 function formatHexDump(hex: string): string[] {
   const bytes = hex.replace(/ …$/, '').split(' ').filter(Boolean);
   const lines: string[] = [];
+
   for (let i = 0; i < bytes.length; i += 16) {
     const offset = i.toString(16).padStart(4, '0');
     const chunk = bytes.slice(i, i + 16);
@@ -43,9 +44,10 @@ function formatHexDump(hex: string): string[] {
         return code >= 0x20 && code < 0x7f ? String.fromCharCode(code) : '.';
       })
       .join('');
-    lines.push(`${dim(offset)}  ${hexPart.padEnd(48)}  ${dim(asciiPart)}`);
+    lines.push(`${dim(offset)} ${hexPart.padEnd(48)} ${dim(asciiPart)}`);
   }
-  if (hex.endsWith('…')) lines.push(`${dim('     … (truncated)')}`);
+
+  if (hex.endsWith('…')) lines.push(`${dim('… (truncated)')}`);
   return lines;
 }
 
